@@ -27,12 +27,18 @@ ACTIVITY_COLORS = {
 
 
 def create_base_map(zoom=11):
-    """Crea un mapa base centrado en Luarca con capas náuticas seleccionables."""
+    """Crea un mapa base centrado en la franja costera (coast + mar) al norte de Luarca.
+
+    Encaja el viewport en un bounding box que deja Luarca en el borde sur y
+    maximiza la superficie de mar visible (Golfo de Vizcaya).
+    """
     m = folium.Map(
         location=[LUARCA_LAT, LUARCA_LON],
         zoom_start=zoom,
         tiles=None,
     )
+    # Fit a sea-dominant view: south edge at Luarca coast, extending north to open sea
+    m.fit_bounds([[43.50, -7.10], [44.10, -5.85]])
 
     # --- Capas base (seleccionables como radio; la primera es la activa) ---
     folium.TileLayer(
