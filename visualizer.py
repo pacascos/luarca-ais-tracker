@@ -34,28 +34,19 @@ def create_base_map(zoom=11):
         tiles=None,
     )
 
-    # --- Capas base (seleccionables como radio) ---
+    # --- Capas base (seleccionables como radio; la primera es la activa) ---
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="Satélite",
+        overlay=False,
+        control=True,
+    ).add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
         attr="Esri Ocean",
         name="Esri Ocean (batimetría)",
         max_zoom=13,
-        overlay=False,
-        control=True,
-    ).add_to(m)
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Esri Ocean Reference (etiquetas)",
-        max_zoom=13,
-        overlay=True,
-        control=True,
-        show=False,
-    ).add_to(m)
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Satélite",
         overlay=False,
         control=True,
     ).add_to(m)
@@ -65,6 +56,15 @@ def create_base_map(zoom=11):
     ).add_to(m)
 
     # --- Overlays náuticos ---
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="Esri Ocean Reference (etiquetas)",
+        max_zoom=13,
+        overlay=True,
+        control=True,
+        show=False,
+    ).add_to(m)
     folium.TileLayer(
         tiles="https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png",
         attr="OpenSeaMap",
@@ -83,7 +83,7 @@ def create_base_map(zoom=11):
         attr="EMODnet Bathymetry",
         overlay=True,
         control=True,
-        show=False,
+        show=True,
     ).add_to(m)
     folium.raster_layers.WmsTileLayer(
         url="https://ows.emodnet-bathymetry.eu/wms",
@@ -95,7 +95,7 @@ def create_base_map(zoom=11):
         attr="EMODnet Bathymetry",
         overlay=True,
         control=True,
-        show=False,
+        show=True,
     ).add_to(m)
     folium.raster_layers.WmsTileLayer(
         url="https://wms.gebco.net/mapserv",
@@ -213,7 +213,7 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
         # Capa interactiva: celdas clicables con detalles por barco
         details = get_fishing_zone_details(df, grid_size=grid_size)
         detail_layer = folium.FeatureGroup(
-            name="Detalle por celda (click)", show=True
+            name="Detalle por celda (click)", show=False
         )
         half = grid_size / 2
         for (lat_g, lon_g), info in details.items():
