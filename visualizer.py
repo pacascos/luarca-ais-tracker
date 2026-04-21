@@ -201,18 +201,34 @@ def map_vessel_tracks(mmsi=None, since=None, output=None):
 
 
 FISHING_JS_TEMPLATE = r"""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+<style>
+  #df-panel .noUi-connect { background: #e74c3c; }
+  #df-panel .noUi-horizontal { height: 12px; }
+  #df-panel .noUi-horizontal .noUi-handle {
+    width: 22px; height: 22px; top: -6px; right: -11px;
+    border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
+</style>
 <div id="df-panel" style="
-  position: fixed; top: 10px; left: 170px; z-index: 1000;
-  background: white; padding: 8px 12px; border-radius: 4px;
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 1000; width: min(720px, calc(100vw - 60px));
+  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
   border: 1px solid #aaa; font-family: -apple-system, sans-serif;
-  font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
 ">
-  <label style="margin-right:6px;"><b>Desde</b></label>
-  <input type="date" id="df-input" min="__MIN_DATE__" max="__MAX_DATE__" style="padding:2px 4px;">
-  <button id="df-clear" style="margin-left:6px;padding:2px 10px;cursor:pointer;">Todo</button>
-  <span style="margin-left:10px;color:#666;">
-    <b id="df-count">0</b> pos · <b id="df-cells">0</b> celdas
-  </span>
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+    <b>Periodo</b>
+    <span style="color:#444;">
+      <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
+      &nbsp;·&nbsp; <b id="df-count">0</b> pos
+      &nbsp;·&nbsp; <b id="df-cells">0</b> celdas
+    </span>
+    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
+  </div>
+  <div id="df-slider" style="margin: 10px 8px 0;"></div>
 </div>
 <script>
 (function(){
@@ -222,12 +238,13 @@ FISHING_JS_TEMPLATE = r"""
     if (typeof __HEAT__ !== 'undefined' &&
         typeof __TOP__ !== 'undefined' &&
         typeof __DETAIL__ !== 'undefined' &&
-        typeof __POSITIONS__ !== 'undefined') {
+        typeof __POSITIONS__ !== 'undefined' &&
+        typeof noUiSlider !== 'undefined') {
       clearInterval(iv);
       init();
-    } else if (tries > 200) {
+    } else if (tries > 400) {
       clearInterval(iv);
-      console.error('Folium layers not ready after 10s');
+      console.error('Folium layers / noUiSlider not ready after 20s');
     }
   }, 50);
 
@@ -235,6 +252,8 @@ FISHING_JS_TEMPLATE = r"""
     var ALL = __POINTS__;
     var NAMES = __NAMES__;
     var GRID = __GRID__;
+    var MIN_TS = __MIN_TS__;
+    var MAX_TS = __MAX_TS__;
     var heat = __HEAT__;
     var top_zones = __TOP__;
     var detail = __DETAIL__;
@@ -247,10 +266,18 @@ FISHING_JS_TEMPLATE = r"""
       return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' +
              pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
+    function fmtDate(ts){
+      var d = new Date(ts);
+      return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear();
+    }
 
-    function filterPts(minTs){
-      if (minTs == null) return ALL;
-      return ALL.filter(function(p){ return p[2] >= minTs; });
+    function filterPts(minTs, maxTs){
+      if (minTs == null && maxTs == null) return ALL;
+      return ALL.filter(function(p){
+        if (minTs != null && p[2] < minTs) return false;
+        if (maxTs != null && p[2] > maxTs) return false;
+        return true;
+      });
     }
 
     function aggregate(pts){
@@ -297,8 +324,8 @@ FISHING_JS_TEMPLATE = r"""
         '</tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
 
-    function rebuild(minTs){
-      var pts = filterPts(minTs);
+    function rebuild(minTs, maxTs){
+      var pts = filterPts(minTs, maxTs);
 
       heat.setLatLngs(pts.map(function(p){ return [p[0], p[1], 1]; }));
 
@@ -343,16 +370,41 @@ FISHING_JS_TEMPLATE = r"""
       document.getElementById('df-cells').textContent = cells.length;
     }
 
-    document.getElementById('df-input').addEventListener('change', function(e){
-      var v = e.target.value;
-      rebuild(v ? new Date(v).getTime() : null);
-    });
-    document.getElementById('df-clear').addEventListener('click', function(){
-      document.getElementById('df-input').value = '';
-      rebuild(null);
+    var slider = document.getElementById('df-slider');
+    var DAY = 24 * 60 * 60 * 1000;
+    noUiSlider.create(slider, {
+      start: [MIN_TS, MAX_TS],
+      connect: true,
+      range: {min: MIN_TS, max: MAX_TS},
+      step: DAY,
+      behaviour: 'drag-tap',
     });
 
-    rebuild(null);
+    slider.noUiSlider.on('update', function(values){
+      var lo = +values[0], hi = +values[1];
+      document.getElementById('df-min').textContent = fmtDate(lo);
+      document.getElementById('df-max').textContent = fmtDate(hi);
+    });
+
+    var pending = null;
+    slider.noUiSlider.on('slide', function(values){
+      // Redraw durante el arrastre (con throttle ligero).
+      var lo = +values[0], hi = +values[1];
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(function(){
+        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+      }, 80);
+    });
+    slider.noUiSlider.on('set', function(values){
+      var lo = +values[0], hi = +values[1];
+      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+    });
+
+    document.getElementById('df-clear').addEventListener('click', function(){
+      slider.noUiSlider.set([MIN_TS, MAX_TS]);
+    });
+
+    rebuild(null, null);
   }
 })();
 </script>
@@ -400,10 +452,10 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
     folium.LayerControl().add_to(m)
 
     if fishing.empty:
-        min_date = max_date = ""
+        min_ts = max_ts = 0
     else:
-        min_date = fishing["timestamp"].min().strftime("%Y-%m-%d")
-        max_date = fishing["timestamp"].max().strftime("%Y-%m-%d")
+        min_ts = int(fishing["timestamp"].min().timestamp() * 1000)
+        max_ts = int(fishing["timestamp"].max().timestamp() * 1000)
 
     js = (
         FISHING_JS_TEMPLATE
@@ -414,8 +466,8 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
         .replace("__TOP__", top_layer.get_name())
         .replace("__DETAIL__", detail_layer.get_name())
         .replace("__POSITIONS__", positions_layer.get_name())
-        .replace("__MIN_DATE__", min_date)
-        .replace("__MAX_DATE__", max_date)
+        .replace("__MIN_TS__", str(min_ts))
+        .replace("__MAX_TS__", str(max_ts))
     )
     m.get_root().html.add_child(folium.Element(js))
 
