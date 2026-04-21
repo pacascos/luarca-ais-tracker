@@ -40,13 +40,28 @@ def create_base_map(zoom=11):
     # Fit a sea-dominant view: south edge at Luarca coast, extending north to open sea
     m.fit_bounds([[43.50, -7.10], [44.10, -5.85]])
 
-    # --- Capas base (seleccionables como radio; la primera es la activa) ---
+    # Enlace flotante de vuelta al índice
+    m.get_root().html.add_child(folium.Element(
+        """
+        <a href=\"index.html\" style=\"
+            position: fixed; top: 10px; left: 60px; z-index: 1000;
+            background: white; padding: 7px 12px; border-radius: 4px;
+            border: 1px solid #aaa; font-family: -apple-system, sans-serif;
+            font-size: 13px; color: #222; text-decoration: none;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        \" onmouseover=\"this.style.background='#f4f4f4'\"
+           onmouseout=\"this.style.background='white'\">\u2190 \u00cdndice</a>
+        """
+    ))
+
+    # --- Capas base (seleccionables como radio; solo Satélite se muestra al cargar) ---
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri",
         name="Satélite",
         overlay=False,
         control=True,
+        show=True,
     ).add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
@@ -55,10 +70,13 @@ def create_base_map(zoom=11):
         max_zoom=13,
         overlay=False,
         control=True,
+        show=False,
     ).add_to(m)
-    folium.TileLayer("OpenStreetMap", name="OpenStreetMap", overlay=False).add_to(m)
     folium.TileLayer(
-        "CartoDB positron", name="CartoDB claro", overlay=False
+        "OpenStreetMap", name="OpenStreetMap", overlay=False, show=False
+    ).add_to(m)
+    folium.TileLayer(
+        "CartoDB positron", name="CartoDB claro", overlay=False, show=False
     ).add_to(m)
 
     # --- Overlays náuticos ---
