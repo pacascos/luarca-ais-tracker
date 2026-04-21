@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIS Luarca — Rutas de pesca</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+    }
+    h1 { margin-bottom: 0.2rem; }
+    .sub { color: #666; margin-top: 0; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card {
+      border: 1px solid #ccc; border-radius: 8px; padding: 1rem; text-decoration: none;
+      color: inherit; transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .card h3 { margin-top: 0; }
+    footer { margin-top: 3rem; color: #888; font-size: 0.9rem; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #eee; }
+      .card { border-color: #444; }
+      .sub, footer { color: #aaa; }
+    }
+  </style>
+</head>
+<body>
+  <h1>AIS Luarca</h1>
+  <p class="sub">Rutas y zonas de pesca de la flota pesquera de Luarca (Golfo de Vizcaya) a partir de datos AIS.</p>
+
+  <div class="cards">
+    <a class="card" href="mapa_tracks.html">
+      <h3>Tracks de barcos</h3>
+      <p>Trayectorias completas coloreadas por actividad (pesca, tránsito, amarrado).</p>
+    </a>
+    <a class="card" href="mapa_pesca.html">
+      <h3>Zonas de pesca</h3>
+      <p>Mapa de calor + celdas clicables con detalle de barcos que pescaron en cada zona.</p>
+    </a>
+    <a class="card" href="mapa_viajes.html">
+      <h3>Viajes</h3>
+      <p>Viajes individuales puerto → mar → puerto con duración y porcentaje de pesca.</p>
+    </a>
+  </div>
+
+  <footer>
+    Datos: aisstream.io + VesselTracker · Cartografía: OpenStreetMap, Esri Ocean,
+    OpenSeaMap, EMODnet Bathymetry, GEBCO.
+  </footer>
+</body>
+</html>

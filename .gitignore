@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.db
+.venv/
+data/
+*.gif
+collector.log
+*.log
+.DS_Store
+.claude/
