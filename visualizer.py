@@ -1,5 +1,6 @@
 """Visualización de rutas AIS en mapas HTML con Folium."""
 
+import json
 import os
 
 import folium
@@ -199,103 +200,227 @@ def map_vessel_tracks(mmsi=None, since=None, output=None):
     return m
 
 
+FISHING_JS_TEMPLATE = r"""
+<div id="df-panel" style="
+  position: fixed; top: 10px; left: 170px; z-index: 1000;
+  background: white; padding: 8px 12px; border-radius: 4px;
+  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
+  font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+">
+  <label style="margin-right:6px;"><b>Desde</b></label>
+  <input type="date" id="df-input" min="__MIN_DATE__" max="__MAX_DATE__" style="padding:2px 4px;">
+  <button id="df-clear" style="margin-left:6px;padding:2px 10px;cursor:pointer;">Todo</button>
+  <span style="margin-left:10px;color:#666;">
+    <b id="df-count">0</b> pos · <b id="df-cells">0</b> celdas
+  </span>
+</div>
+<script>
+(function(){
+  var tries = 0;
+  var iv = setInterval(function(){
+    tries++;
+    if (typeof __HEAT__ !== 'undefined' &&
+        typeof __TOP__ !== 'undefined' &&
+        typeof __DETAIL__ !== 'undefined' &&
+        typeof __POSITIONS__ !== 'undefined') {
+      clearInterval(iv);
+      init();
+    } else if (tries > 200) {
+      clearInterval(iv);
+      console.error('Folium layers not ready after 10s');
+    }
+  }, 50);
+
+  function init(){
+    var ALL = __POINTS__;
+    var NAMES = __NAMES__;
+    var GRID = __GRID__;
+    var heat = __HEAT__;
+    var top_zones = __TOP__;
+    var detail = __DETAIL__;
+    var positions = __POSITIONS__;
+
+    function roundG(x){ return Math.round(x / GRID) * GRID; }
+    function pad(n){ return n.toString().padStart(2, '0'); }
+    function fmt(ts){
+      var d = new Date(ts);
+      return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' +
+             pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    function filterPts(minTs){
+      if (minTs == null) return ALL;
+      return ALL.filter(function(p){ return p[2] >= minTs; });
+    }
+
+    function aggregate(pts){
+      var cells = {};
+      for (var i = 0; i < pts.length; i++){
+        var p = pts[i];
+        var lg = roundG(p[0]), ln = roundG(p[1]);
+        var key = lg.toFixed(3) + '_' + ln.toFixed(3);
+        var c = cells[key];
+        if (!c){ c = {lat: lg, lon: ln, count: 0, sogSum: 0, vessels: {}}; cells[key] = c; }
+        c.count++; c.sogSum += p[4];
+        var v = c.vessels[p[3]];
+        if (!v){ v = c.vessels[p[3]] = {mmsi: p[3], positions: 0, sogSum: 0, first: p[2], last: p[2]}; }
+        v.positions++; v.sogSum += p[4];
+        if (p[2] < v.first) v.first = p[2];
+        if (p[2] > v.last) v.last = p[2];
+      }
+      return Object.values(cells);
+    }
+
+    function popupHtml(c){
+      var vs = Object.values(c.vessels).sort(function(a, b){ return b.positions - a.positions; });
+      var rows = '';
+      for (var i = 0; i < vs.length; i++){
+        var v = vs[i];
+        rows += '<tr><td>' + (NAMES[v.mmsi] || '?') +
+          '</td><td>' + v.mmsi +
+          '</td><td style="text-align:right">' + v.positions +
+          '</td><td style="text-align:right">' + (v.sogSum / v.positions).toFixed(1) +
+          '</td><td>' + fmt(v.first) + '</td><td>' + fmt(v.last) + '</td></tr>';
+      }
+      return '<div style="font-family:sans-serif;font-size:12px;min-width:420px">' +
+        '<b>Celda ' + c.lat.toFixed(3) + ', ' + c.lon.toFixed(3) + '</b><br>' +
+        'Posiciones: ' + c.count + ' · Barcos: ' + Object.keys(c.vessels).length + ' · ' +
+        'SOG media: ' + (c.sogSum/c.count).toFixed(1) + ' kn' +
+        '<table style="border-collapse:collapse;margin-top:6px;width:100%">' +
+        '<thead><tr style="background:#f2f2f2">' +
+          '<th style="text-align:left;padding:2px 6px">Barco</th>' +
+          '<th style="text-align:left;padding:2px 6px">MMSI</th>' +
+          '<th style="text-align:right;padding:2px 6px">Pos</th>' +
+          '<th style="text-align:right;padding:2px 6px">SOG</th>' +
+          '<th style="text-align:left;padding:2px 6px">Primera</th>' +
+          '<th style="text-align:left;padding:2px 6px">Última</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function rebuild(minTs){
+      var pts = filterPts(minTs);
+
+      heat.setLatLngs(pts.map(function(p){ return [p[0], p[1], 1]; }));
+
+      top_zones.clearLayers();
+      var cells = aggregate(pts).sort(function(a, b){ return b.count - a.count; });
+      var top = cells.slice(0, 20);
+      for (var i = 0; i < top.length; i++){
+        var c = top[i];
+        L.circleMarker([c.lat, c.lon], {
+          radius: Math.min(c.count / 2, 20),
+          color: '#e74c3c', fill: true, fillOpacity: 0.6
+        }).bindPopup(
+          'Posiciones: ' + c.count + '<br>' +
+          'Barcos: ' + Object.keys(c.vessels).length + '<br>' +
+          'SOG media: ' + (c.sogSum / c.count).toFixed(1) + ' kn'
+        ).addTo(top_zones);
+      }
+
+      detail.clearLayers();
+      var half = GRID / 2;
+      for (var j = 0; j < cells.length; j++){
+        var c2 = cells[j];
+        L.rectangle(
+          [[c2.lat - half, c2.lon - half], [c2.lat + half, c2.lon + half]],
+          {color: '#e74c3c', weight: 1, fill: true, fillOpacity: 0.05}
+        ).bindPopup(popupHtml(c2), {maxWidth: 520})
+         .bindTooltip(c2.lat.toFixed(3) + ', ' + c2.lon.toFixed(3) + ' · ' +
+           c2.count + ' pos · ' + Object.keys(c2.vessels).length + ' barcos')
+         .addTo(detail);
+      }
+
+      positions.clearLayers();
+      for (var k = 0; k < pts.length; k++){
+        var p = pts[k];
+        L.circleMarker([p[0], p[1]], {radius: 2, color: '#e74c3c', fill: true})
+          .bindPopup('MMSI: ' + p[3] + '<br>' + (NAMES[p[3]] || '?') +
+                     '<br>SOG: ' + p[4].toFixed(1) + ' kn<br>' + fmt(p[2]))
+          .addTo(positions);
+      }
+
+      document.getElementById('df-count').textContent = pts.length;
+      document.getElementById('df-cells').textContent = cells.length;
+    }
+
+    document.getElementById('df-input').addEventListener('change', function(e){
+      var v = e.target.value;
+      rebuild(v ? new Date(v).getTime() : null);
+    });
+    document.getElementById('df-clear').addEventListener('click', function(){
+      document.getElementById('df-input').value = '';
+      rebuild(null);
+    });
+
+    rebuild(null);
+  }
+})();
+</script>
+"""
+
+
 def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
+    """Genera el mapa de zonas de pesca con filtro de fecha client-side."""
     output = output or _web_path("mapa_pesca.html")
-    """Genera un mapa de calor de las zonas de pesca."""
     df = analyze_vessel_tracks(mmsi=mmsi, since=since)
-    zones = get_fishing_zones(df, grid_size=grid_size)
 
     m = create_base_map(zoom=10)
 
-    if not zones.empty:
-        # Heatmap
-        heat_data = zones[["lat_grid", "lon_grid", "count"]].values.tolist()
-        HeatMap(
-            heat_data,
-            radius=20,
-            blur=15,
-            max_zoom=13,
-            name="Densidad de pesca",
-        ).add_to(m)
+    fishing = df[df["activity"] == "fishing"].copy() if not df.empty else df
 
-        # Marcadores en las zonas top
-        cluster = MarkerCluster(name="Zonas de pesca (top)").add_to(m)
-        for _, z in zones.head(20).iterrows():
-            folium.CircleMarker(
-                [z["lat_grid"], z["lon_grid"]],
-                radius=min(z["count"] / 2, 20),
-                color="#e74c3c",
-                fill=True,
-                fill_opacity=0.6,
-                popup=(
-                    f"Posiciones: {int(z['count'])}<br>"
-                    f"Barcos: {int(z['vessels'])}<br>"
-                    f"SOG media: {z['avg_sog']:.1f} kn"
-                ),
-            ).add_to(cluster)
-
-        # Capa interactiva: celdas clicables con detalles por barco
-        details = get_fishing_zone_details(df, grid_size=grid_size)
-        detail_layer = folium.FeatureGroup(
-            name="Detalle por celda (click)", show=False
-        )
-        half = grid_size / 2
-        for (lat_g, lon_g), info in details.items():
-            rows = "".join(
-                f"<tr><td>{v['name']}</td>"
-                f"<td>{v['mmsi']}</td>"
-                f"<td style='text-align:right'>{v['positions']}</td>"
-                f"<td style='text-align:right'>{v['avg_sog']:.1f}</td>"
-                f"<td>{v['first'].strftime('%d/%m %H:%M')}</td>"
-                f"<td>{v['last'].strftime('%d/%m %H:%M')}</td></tr>"
-                for v in info["vessel_breakdown"]
-            )
-            html = (
-                f"<div style='font-family:sans-serif;font-size:12px;min-width:420px'>"
-                f"<b>Celda {lat_g:.3f}, {lon_g:.3f}</b><br>"
-                f"Posiciones: {info['count']} · Barcos: {info['vessels']} · "
-                f"SOG media: {info['avg_sog']:.1f} kn"
-                f"<table style='border-collapse:collapse;margin-top:6px;width:100%'>"
-                f"<thead><tr style='background:#f2f2f2'>"
-                f"<th style='text-align:left;padding:2px 6px'>Barco</th>"
-                f"<th style='text-align:left;padding:2px 6px'>MMSI</th>"
-                f"<th style='text-align:right;padding:2px 6px'>Pos</th>"
-                f"<th style='text-align:right;padding:2px 6px'>SOG</th>"
-                f"<th style='text-align:left;padding:2px 6px'>Primera</th>"
-                f"<th style='text-align:left;padding:2px 6px'>Última</th>"
-                f"</tr></thead><tbody>{rows}</tbody></table></div>"
-            )
-            folium.Rectangle(
-                bounds=[[lat_g - half, lon_g - half], [lat_g + half, lon_g + half]],
-                color="#e74c3c",
-                weight=1,
-                fill=True,
-                fill_opacity=0.05,
-                popup=folium.Popup(html, max_width=520),
-                tooltip=(
-                    f"{lat_g:.3f}, {lon_g:.3f} · "
-                    f"{info['count']} pos · {info['vessels']} barcos"
-                ),
-            ).add_to(detail_layer)
-        detail_layer.add_to(m)
-
-    # Posiciones de pesca individuales
-    fishing = df[df["activity"] == "fishing"]
+    # Puntos crudos embebidos: [lat, lon, ts_ms, mmsi, sog]
+    points = []
     if not fishing.empty:
-        fg = folium.FeatureGroup(name="Posiciones de pesca", show=False)
-        for _, row in fishing.iterrows():
-            folium.CircleMarker(
-                [row["lat"], row["lon"]],
-                radius=2,
-                color="#e74c3c",
-                fill=True,
-                popup=f"MMSI: {row['mmsi']}<br>SOG: {row['sog']:.1f}<br>{row['timestamp']}",
-            ).add_to(fg)
-        fg.add_to(m)
+        for row in fishing.itertuples(index=False):
+            sog = float(row.sog) if row.sog is not None else 0.0
+            points.append([
+                round(float(row.lat), 6),
+                round(float(row.lon), 6),
+                int(row.timestamp.timestamp() * 1000),
+                str(row.mmsi),
+                round(sog, 2),
+            ])
+
+    vessels_db = load_vessels()
+    names = {str(r.mmsi): (r.name or "?") for r in vessels_db.itertuples(index=False)}
+
+    # Capas placeholder — se pueblan client-side. Heatmap exige 1 punto dummy.
+    dummy = [[LUARCA_LAT, LUARCA_LON, 0.0001]]
+    heat_layer = HeatMap(
+        dummy, radius=20, blur=15, max_zoom=13, name="Densidad de pesca"
+    )
+    heat_layer.add_to(m)
+    top_layer = folium.FeatureGroup(name="Zonas de pesca (top)", show=True)
+    top_layer.add_to(m)
+    detail_layer = folium.FeatureGroup(name="Detalle por celda (click)", show=False)
+    detail_layer.add_to(m)
+    positions_layer = folium.FeatureGroup(name="Posiciones de pesca", show=False)
+    positions_layer.add_to(m)
 
     folium.LayerControl().add_to(m)
+
+    if fishing.empty:
+        min_date = max_date = ""
+    else:
+        min_date = fishing["timestamp"].min().strftime("%Y-%m-%d")
+        max_date = fishing["timestamp"].max().strftime("%Y-%m-%d")
+
+    js = (
+        FISHING_JS_TEMPLATE
+        .replace("__POINTS__", json.dumps(points))
+        .replace("__NAMES__", json.dumps(names))
+        .replace("__GRID__", str(grid_size))
+        .replace("__HEAT__", heat_layer.get_name())
+        .replace("__TOP__", top_layer.get_name())
+        .replace("__DETAIL__", detail_layer.get_name())
+        .replace("__POSITIONS__", positions_layer.get_name())
+        .replace("__MIN_DATE__", min_date)
+        .replace("__MAX_DATE__", max_date)
+    )
+    m.get_root().html.add_child(folium.Element(js))
+
     m.save(output)
-    print(f"Mapa de zonas de pesca guardado en {output}")
+    print(f"Mapa de zonas de pesca guardado en {output} ({len(points)} puntos)")
     return m
 
 
