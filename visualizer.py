@@ -149,54 +149,195 @@ def _web_path(filename):
     return os.path.join(WEB_DIR, filename)
 
 
+TRACKS_JS_TEMPLATE = r"""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+<style>
+  #df-panel .noUi-connect { background: #3498db; }
+  #df-panel .noUi-horizontal { height: 12px; }
+  #df-panel .noUi-horizontal .noUi-handle {
+    width: 22px; height: 22px; top: -6px; right: -11px;
+    border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
+</style>
+<div id="df-panel" style="
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 1000; width: min(720px, calc(100vw - 60px));
+  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
+  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
+  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+    <b>Periodo</b>
+    <span style="color:#444;">
+      <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
+      &nbsp;·&nbsp; <b id="df-count">0</b> pos
+      &nbsp;·&nbsp; <b id="df-vessels">0</b> barcos
+    </span>
+    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
+  </div>
+  <div id="df-slider" style="margin: 10px 8px 0;"></div>
+</div>
+<script>
+(function(){
+  var tries = 0;
+  var iv = setInterval(function(){
+    tries++;
+    if (__READY__ && typeof noUiSlider !== 'undefined') {
+      clearInterval(iv); init();
+    } else if (tries > 400) {
+      clearInterval(iv); console.error('tracks layers not ready');
+    }
+  }, 50);
+
+  function init(){
+    var ALL = __POINTS__;
+    var NAMES = __NAMES__;
+    var MIN_TS = __MIN_TS__;
+    var MAX_TS = __MAX_TS__;
+    var LAYERS = __LAYERS__;
+    var ACT_NAMES = ['fishing','transit','moored','slow_transit','unknown'];
+    var ACT_COLORS = ['#e74c3c','#3498db','#95a5a6','#f39c12','#bdc3c7'];
+
+    function pad(n){ return n.toString().padStart(2, '0'); }
+    function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
+
+    function filterPts(minTs, maxTs){
+      if (minTs == null && maxTs == null) return ALL;
+      return ALL.filter(function(p){
+        if (minTs != null && p[2] < minTs) return false;
+        if (maxTs != null && p[2] > maxTs) return false;
+        return true;
+      });
+    }
+
+    function rebuild(minTs, maxTs){
+      var pts = filterPts(minTs, maxTs);
+      for (var k in LAYERS) LAYERS[k].clearLayers();
+
+      var byMmsi = {};
+      for (var i = 0; i < pts.length; i++){
+        var p = pts[i];
+        if (!byMmsi[p[3]]) byMmsi[p[3]] = [];
+        byMmsi[p[3]].push(p);
+      }
+      var vesselCount = 0;
+      for (var m in byMmsi){
+        vesselCount++;
+        var vp = byMmsi[m];
+        vp.sort(function(a,b){ return a[2] - b[2]; });
+        var name = NAMES[m] || m;
+        for (var j = 0; j < vp.length - 1; j++){
+          var p1 = vp[j], p2 = vp[j + 1];
+          var act = p1[4];
+          var layer = LAYERS[act];
+          if (!layer) continue;
+          L.polyline([[p1[0], p1[1]], [p2[0], p2[1]]], {
+            color: ACT_COLORS[act], weight: 3, opacity: 0.7
+          }).bindPopup(name + ' | ' + ACT_NAMES[act] + ' | SOG: ' + p1[5].toFixed(1) + ' kn')
+            .addTo(layer);
+        }
+      }
+
+      document.getElementById('df-count').textContent = pts.length;
+      document.getElementById('df-vessels').textContent = vesselCount;
+    }
+
+    var slider = document.getElementById('df-slider');
+    noUiSlider.create(slider, {
+      start: [MIN_TS, MAX_TS], connect: true,
+      range: {min: MIN_TS, max: MAX_TS},
+      step: 24*60*60*1000, behaviour: 'drag-tap',
+    });
+    slider.noUiSlider.on('update', function(values){
+      document.getElementById('df-min').textContent = fmtDate(+values[0]);
+      document.getElementById('df-max').textContent = fmtDate(+values[1]);
+    });
+    var pending = null;
+    slider.noUiSlider.on('slide', function(values){
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(function(){
+        var lo = +values[0], hi = +values[1];
+        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+      }, 100);
+    });
+    slider.noUiSlider.on('set', function(values){
+      var lo = +values[0], hi = +values[1];
+      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+    });
+    document.getElementById('df-clear').addEventListener('click', function(){
+      slider.noUiSlider.set([MIN_TS, MAX_TS]);
+    });
+
+    rebuild(null, null);
+  }
+})();
+</script>
+"""
+
+
+ACTIVITY_ORDER = ["fishing", "transit", "moored", "slow_transit", "unknown"]
+
+
 def map_vessel_tracks(mmsi=None, since=None, output=None):
+    """Tracks coloreadas por actividad con filtro de fecha client-side."""
     output = output or _web_path("mapa_tracks.html")
-    """Genera un mapa con las tracks de los barcos coloreadas por actividad."""
     df = analyze_vessel_tracks(mmsi=mmsi, since=since)
-    if df.empty:
-        print("No hay datos para visualizar.")
-        return None
 
     m = create_base_map(zoom=10)
 
-    # Capa por cada tipo de actividad
-    layers = {}
-    for activity, color in ACTIVITY_COLORS.items():
-        layers[activity] = folium.FeatureGroup(name=f"Actividad: {activity}")
-        layers[activity].add_to(m)
-
-    # Dibujar tracks por barco
-    vessels = df["mmsi"].unique()
-    for vessel_mmsi in vessels:
-        vdf = df[df["mmsi"] == vessel_mmsi].sort_values("timestamp")
-        name = vdf.iloc[0].get("mmsi", vessel_mmsi)
-
-        # Obtener nombre del barco
-        vessels_db = load_vessels()
-        vessel_info = vessels_db[vessels_db["mmsi"] == vessel_mmsi]
-        if not vessel_info.empty and vessel_info.iloc[0]["name"]:
-            name = vessel_info.iloc[0]["name"]
-
-        # Segmentos coloreados por actividad
-        for i in range(len(vdf) - 1):
-            p1 = vdf.iloc[i]
-            p2 = vdf.iloc[i + 1]
-            activity = p1["activity"]
-            color = ACTIVITY_COLORS.get(activity, "#bdc3c7")
-
-            line = folium.PolyLine(
-                [[p1["lat"], p1["lon"]], [p2["lat"], p2["lon"]]],
-                color=color,
-                weight=3,
-                opacity=0.7,
-                popup=f"{name} | {activity} | SOG: {p1['sog']:.1f} kn",
-            )
-            if activity in layers:
-                line.add_to(layers[activity])
+    activity_layers = {}
+    for act in ACTIVITY_ORDER:
+        fg = folium.FeatureGroup(name=f"Actividad: {act}")
+        fg.add_to(m)
+        activity_layers[act] = fg
 
     folium.LayerControl().add_to(m)
+
+    # [lat, lon, ts_ms, mmsi, act_idx, sog]
+    act_idx = {a: i for i, a in enumerate(ACTIVITY_ORDER)}
+    points = []
+    if not df.empty:
+        for row in df.itertuples(index=False):
+            sog = float(row.sog) if row.sog is not None else 0.0
+            points.append([
+                round(float(row.lat), 6),
+                round(float(row.lon), 6),
+                int(row.timestamp.timestamp() * 1000),
+                str(row.mmsi),
+                act_idx.get(row.activity, 4),
+                round(sog, 2),
+            ])
+
+    vessels_db = load_vessels()
+    names = {str(r.mmsi): (r.name or "?") for r in vessels_db.itertuples(index=False)}
+
+    if df.empty:
+        min_ts = max_ts = 0
+    else:
+        min_ts = int(df["timestamp"].min().timestamp() * 1000)
+        max_ts = int(df["timestamp"].max().timestamp() * 1000)
+
+    layer_names = [activity_layers[a].get_name() for a in ACTIVITY_ORDER]
+    layers_js = "{" + ", ".join(
+        f"{i}: {layer_names[i]}" for i in range(len(ACTIVITY_ORDER))
+    ) + "}"
+    ready_js = " && ".join(f"typeof {n} !== 'undefined'" for n in layer_names)
+
+    js = (
+        TRACKS_JS_TEMPLATE
+        .replace("__POINTS__", json.dumps(points))
+        .replace("__NAMES__", json.dumps(names))
+        .replace("__LAYERS__", layers_js)
+        .replace("__READY__", ready_js)
+        .replace("__MIN_TS__", str(min_ts))
+        .replace("__MAX_TS__", str(max_ts))
+    )
+    m.get_root().html.add_child(folium.Element(js))
+
     m.save(output)
-    print(f"Mapa guardado en {output}")
+    print(f"Mapa guardado en {output} ({len(points)} puntos)")
     return m
 
 
@@ -476,63 +617,169 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
     return m
 
 
-def map_trips(mmsi=None, since=None, output=None):
-    output = output or _web_path("mapa_viajes.html")
-    """Genera un mapa con los viajes individuales (puerto -> mar -> puerto)."""
-    df = analyze_vessel_tracks(mmsi=mmsi, since=since)
-    trips = get_trip_summary(df)
+TRIPS_JS_TEMPLATE = r"""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+<style>
+  #df-panel .noUi-connect { background: #2ecc71; }
+  #df-panel .noUi-horizontal { height: 12px; }
+  #df-panel .noUi-horizontal .noUi-handle {
+    width: 22px; height: 22px; top: -6px; right: -11px;
+    border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
+</style>
+<div id="df-panel" style="
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 1000; width: min(720px, calc(100vw - 60px));
+  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
+  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
+  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+    <b>Periodo</b>
+    <span style="color:#444;">
+      <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
+      &nbsp;·&nbsp; <b id="df-count">0</b> viajes
+    </span>
+    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
+  </div>
+  <div id="df-slider" style="margin: 10px 8px 0;"></div>
+</div>
+<script>
+(function(){
+  var tries = 0;
+  var iv = setInterval(function(){
+    tries++;
+    if (typeof __LAYER__ !== 'undefined' && typeof noUiSlider !== 'undefined'){
+      clearInterval(iv); init();
+    } else if (tries > 400){ clearInterval(iv); console.error('trips layer not ready'); }
+  }, 50);
 
-    if trips.empty:
-        print("No hay viajes detectados.")
-        return None
+  function init(){
+    var ALL = __TRIPS__;
+    var MIN_TS = __MIN_TS__;
+    var MAX_TS = __MAX_TS__;
+    var layer = __LAYER__;
+    var PALETTE = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6',
+                   '#1abc9c','#e67e22','#34495e','#d35400','#c0392b'];
+
+    function pad(n){ return n.toString().padStart(2, '0'); }
+    function fmt(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+    function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
+
+    function rebuild(minTs, maxTs){
+      layer.clearLayers();
+      var trips = ALL.filter(function(t){
+        if (maxTs != null && t.start > maxTs) return false;
+        if (minTs != null && t.end < minTs) return false;
+        return true;
+      });
+      for (var i = 0; i < trips.length; i++){
+        var t = trips[i];
+        if (!t.coords || t.coords.length < 2) continue;
+        var color = PALETTE[i % PALETTE.length];
+        L.polyline(t.coords, {color: color, weight: 3, opacity: 0.85})
+          .bindPopup(
+            '<b>' + (t.name || t.mmsi) + '</b><br>' +
+            'MMSI: ' + t.mmsi + ' · Viaje #' + t.trip_id + '<br>' +
+            fmt(t.start) + ' &rarr; ' + fmt(t.end) + '<br>' +
+            'Duración: ' + t.duration_h.toFixed(1) + ' h<br>' +
+            'Max dist: ' + t.max_dist_nm.toFixed(1) + ' NM<br>' +
+            'Pesca: ' + t.pct_fishing.toFixed(0) + '%'
+          ).addTo(layer);
+        // Start marker
+        L.circleMarker(t.coords[0], {
+          radius: 6, color: '#2ecc71', fillColor: '#2ecc71',
+          fillOpacity: 0.9, weight: 2
+        }).bindPopup('Salida: ' + fmt(t.start)).addTo(layer);
+      }
+      document.getElementById('df-count').textContent = trips.length;
+    }
+
+    var slider = document.getElementById('df-slider');
+    noUiSlider.create(slider, {
+      start: [MIN_TS, MAX_TS], connect: true,
+      range: {min: MIN_TS, max: MAX_TS},
+      step: 24*60*60*1000, behaviour: 'drag-tap',
+    });
+    slider.noUiSlider.on('update', function(values){
+      document.getElementById('df-min').textContent = fmtDate(+values[0]);
+      document.getElementById('df-max').textContent = fmtDate(+values[1]);
+    });
+    var pending = null;
+    slider.noUiSlider.on('slide', function(values){
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(function(){
+        var lo = +values[0], hi = +values[1];
+        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+      }, 100);
+    });
+    slider.noUiSlider.on('set', function(values){
+      var lo = +values[0], hi = +values[1];
+      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
+    });
+    document.getElementById('df-clear').addEventListener('click', function(){
+      slider.noUiSlider.set([MIN_TS, MAX_TS]);
+    });
+
+    rebuild(null, null);
+  }
+})();
+</script>
+"""
+
+
+def map_trips(mmsi=None, since=None, output=None):
+    """Viajes puerto → mar → puerto con filtro de fecha client-side."""
+    output = output or _web_path("mapa_viajes.html")
+    df = analyze_vessel_tracks(mmsi=mmsi, since=since)
+    trips_df = get_trip_summary(df) if not df.empty else df
 
     m = create_base_map(zoom=10)
-
-    # Un color por viaje
-    palette = [
-        "#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6",
-        "#1abc9c", "#e67e22", "#34495e", "#d35400", "#c0392b",
-    ]
-
-    trip_layer = folium.FeatureGroup(name="Viajes")
-    for idx, (_, trip) in enumerate(trips.iterrows()):
-        trip_df = df[
-            (df["mmsi"] == trip["mmsi"]) & (df["trip_id"] == trip["trip_id"])
-        ].sort_values("timestamp")
-
-        if len(trip_df) < 2:
-            continue
-
-        color = palette[idx % len(palette)]
-        coords = trip_df[["lat", "lon"]].values.tolist()
-
-        folium.PolyLine(
-            coords,
-            color=color,
-            weight=3,
-            opacity=0.8,
-            popup=(
-                f"MMSI: {trip['mmsi']}<br>"
-                f"Viaje #{int(trip['trip_id'])}<br>"
-                f"{trip['start'].strftime('%d/%m %H:%M')} - {trip['end'].strftime('%d/%m %H:%M')}<br>"
-                f"Duración: {trip['duration_h']:.1f}h<br>"
-                f"Max dist: {trip['max_dist_nm']:.1f} NM<br>"
-                f"Pesca: {trip['pct_fishing']:.0f}%"
-            ),
-        ).add_to(trip_layer)
-
-        # Marcador de inicio
-        start = trip_df.iloc[0]
-        folium.Marker(
-            [start["lat"], start["lon"]],
-            icon=folium.Icon(color="green", icon="play", prefix="fa"),
-            popup=f"Salida: {trip['start'].strftime('%d/%m %H:%M')}",
-        ).add_to(trip_layer)
-
-    trip_layer.add_to(m)
+    trip_layer = folium.FeatureGroup(name="Viajes").add_to(m)
     folium.LayerControl().add_to(m)
+
+    vessels_db = load_vessels()
+    name_by_mmsi = dict(zip(vessels_db["mmsi"], vessels_db["name"]))
+
+    trips_payload = []
+    if not trips_df.empty:
+        for _, t in trips_df.iterrows():
+            tdf = df[(df["mmsi"] == t["mmsi"]) & (df["trip_id"] == t["trip_id"])].sort_values("timestamp")
+            if len(tdf) < 2:
+                continue
+            coords = [[round(float(r.lat), 6), round(float(r.lon), 6)]
+                      for r in tdf.itertuples(index=False)]
+            trips_payload.append({
+                "mmsi": str(t["mmsi"]),
+                "name": name_by_mmsi.get(t["mmsi"]) or "?",
+                "trip_id": int(t["trip_id"]),
+                "start": int(t["start"].timestamp() * 1000),
+                "end": int(t["end"].timestamp() * 1000),
+                "duration_h": round(float(t["duration_h"]), 2),
+                "max_dist_nm": round(float(t["max_dist_nm"]), 2),
+                "pct_fishing": round(float(t["pct_fishing"]), 1),
+                "coords": coords,
+            })
+
+    if not trips_payload:
+        min_ts = max_ts = 0
+    else:
+        min_ts = min(t["start"] for t in trips_payload)
+        max_ts = max(t["end"] for t in trips_payload)
+
+    js = (
+        TRIPS_JS_TEMPLATE
+        .replace("__TRIPS__", json.dumps(trips_payload))
+        .replace("__LAYER__", trip_layer.get_name())
+        .replace("__MIN_TS__", str(min_ts))
+        .replace("__MAX_TS__", str(max_ts))
+    )
+    m.get_root().html.add_child(folium.Element(js))
+
     m.save(output)
-    print(f"Mapa de viajes guardado en {output}")
+    print(f"Mapa de viajes guardado en {output} ({len(trips_payload)} viajes)")
     return m
 
 
