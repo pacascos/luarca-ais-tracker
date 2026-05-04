@@ -679,20 +679,24 @@ TRIPS_JS_TEMPLATE = r"""
         var t = trips[i];
         if (!t.coords || t.coords.length < 2) continue;
         var color = PALETTE[i % PALETTE.length];
-        L.polyline(t.coords, {color: color, weight: 3, opacity: 0.85})
-          .bindPopup(
+        var popup =
             '<b>' + (t.name || t.mmsi) + '</b><br>' +
-            'MMSI: ' + t.mmsi + ' · Viaje #' + t.trip_id + '<br>' +
+            'MMSI: ' + t.mmsi + ' · Sesión #' + t.trip_id + '<br>' +
             fmt(t.start) + ' &rarr; ' + fmt(t.end) + '<br>' +
             'Duración: ' + t.duration_h.toFixed(1) + ' h<br>' +
             'Max dist: ' + t.max_dist_nm.toFixed(1) + ' NM<br>' +
-            'Pesca: ' + t.pct_fishing.toFixed(0) + '%'
-          ).addTo(layer);
-        // Start marker
-        L.circleMarker(t.coords[0], {
-          radius: 6, color: '#2ecc71', fillColor: '#2ecc71',
+            'Pesca: ' + t.pct_fishing.toFixed(0) + '%';
+        var latlngs = t.coords.map(function(c){ return [c[0], c[1]]; });
+        L.polyline(latlngs, {color: color, weight: 3, opacity: 0.85})
+          .bindPopup(popup).addTo(layer);
+        L.circleMarker(latlngs[0], {
+          radius: 5, color: '#2ecc71', fillColor: '#2ecc71',
           fillOpacity: 0.9, weight: 2
-        }).bindPopup('Salida: ' + fmt(t.start)).addTo(layer);
+        }).bindPopup('Inicio sesión: ' + fmt(t.start)).addTo(layer);
+        L.circleMarker(latlngs[latlngs.length - 1], {
+          radius: 5, color: '#e74c3c', fillColor: '#e74c3c',
+          fillOpacity: 0.9, weight: 2
+        }).bindPopup('Fin sesión: ' + fmt(t.end)).addTo(layer);
       }
       document.getElementById('df-count').textContent = trips.length;
     }
@@ -749,7 +753,8 @@ def map_trips(mmsi=None, since=None, output=None):
             tdf = df[(df["mmsi"] == t["mmsi"]) & (df["trip_id"] == t["trip_id"])].sort_values("timestamp")
             if len(tdf) < 2:
                 continue
-            coords = [[round(float(r.lat), 6), round(float(r.lon), 6)]
+            coords = [[round(float(r.lat), 6), round(float(r.lon), 6),
+                       int(r.timestamp.timestamp() * 1000)]
                       for r in tdf.itertuples(index=False)]
             trips_payload.append({
                 "mmsi": str(t["mmsi"]),

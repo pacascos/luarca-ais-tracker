@@ -101,20 +101,53 @@ def analyze_vessel_tracks(mmsi=None, since=None):
         lambda r: haversine_nm(r["lat"], r["lon"], LUARCA_LAT, LUARCA_LON), axis=1
     )
 
-    # Asignar trip_id: un viaje empieza cuando sale del puerto (>0.5 NM)
-    # y termina cuando vuelve (<0.5 NM)
-    PORT_RADIUS_NM = 0.5
+    # Asignar trip_id por barco. El receptor rara vez captura al barco entrando
+    # o saliendo del puerto, así que en la práctica un "viaje" es una sesión
+    # continua de tracking: lo cortamos al detectar puerto, un gap > 30 min,
+    # o un salto > 1.5 NM entre dos posiciones consecutivas.
+    PORT_RADIUS_NM = 1.0
+    TRIP_GAP_MINUTES = 30
+    TRIP_MAX_SEGMENT_NM = 1.5
     df["in_port"] = df["dist_from_port"] <= PORT_RADIUS_NM
+
+    df = df.sort_values(["mmsi", "timestamp"]).reset_index(drop=True)
 
     trip_id = 0
     trip_ids = []
+    cur_mmsi = None
     prev_in_port = True
+    prev_time = None
+    prev_lat = None
+    prev_lon = None
 
-    for _, row in df.iterrows():
-        if prev_in_port and not row["in_port"]:
-            trip_id += 1
-        prev_in_port = row["in_port"]
-        trip_ids.append(trip_id if not row["in_port"] else 0)
+    for row in df.itertuples(index=False):
+        if row.mmsi != cur_mmsi:
+            cur_mmsi = row.mmsi
+            prev_in_port = True
+            prev_time = None
+            prev_lat = None
+            prev_lon = None
+
+        gap_too_large = (
+            prev_time is not None
+            and (row.timestamp - prev_time).total_seconds() > TRIP_GAP_MINUTES * 60
+        )
+        jump_too_large = (
+            prev_lat is not None
+            and haversine_nm(prev_lat, prev_lon, row.lat, row.lon) > TRIP_MAX_SEGMENT_NM
+        )
+
+        if row.in_port:
+            trip_ids.append(0)
+        else:
+            if prev_in_port or gap_too_large or jump_too_large:
+                trip_id += 1
+            trip_ids.append(trip_id)
+
+        prev_in_port = row.in_port
+        prev_time = row.timestamp
+        prev_lat = row.lat
+        prev_lon = row.lon
 
     df["trip_id"] = trip_ids
     return df
@@ -194,8 +227,18 @@ def get_fishing_zone_details(df=None, mmsi=None, since=None, grid_size=0.01):
     return details
 
 
-def get_trip_summary(df=None, mmsi=None, since=None):
+MIN_TRIP_POSITIONS = 10
+MIN_TRIP_DURATION_H = 1.0
+
+
+def get_trip_summary(df=None, mmsi=None, since=None, only_complete=True):
     """Resume los viajes de cada barco.
+
+    Por defecto solo retorna viajes "completos" — sesiones continuas de
+    tracking con suficientes datos para dibujar una trayectoria coherente
+    (≥10 posiciones y ≥1h de duración). El receptor AIS rara vez captura
+    entradas/salidas de puerto, así que esto es lo más cercano a "datos
+    completos" que ofrecen los datos.
 
     Retorna DataFrame con: mmsi, trip_id, start, end, duration_h,
     max_dist_nm, pct_fishing, n_positions
@@ -221,6 +264,12 @@ def get_trip_summary(df=None, mmsi=None, since=None):
     summary["pct_fishing"] = (
         summary["n_fishing"] / summary["n_positions"] * 100
     ).round(1)
+
+    if only_complete:
+        summary = summary[
+            (summary["n_positions"] >= MIN_TRIP_POSITIONS)
+            & (summary["duration_h"] >= MIN_TRIP_DURATION_H)
+        ].reset_index(drop=True)
 
     return summary
 
