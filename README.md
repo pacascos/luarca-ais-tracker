@@ -37,6 +37,18 @@ Los 3 mapas incluyen varias capas cartográficas seleccionables:
 Esri Ocean (batimetría), Satélite, OpenStreetMap, CartoDB, cartas náuticas
 OpenSeaMap, batimetría EMODnet (multicolor + isóbatas) y GEBCO global.
 
+## Despliegue completo en servidor Linux
+
+Para correr `collector` + regeneración periódica de mapas + servidor web en
+un servidor con systemd, usa el paquete de despliegue:
+
+```bash
+sudo ./deploy/install.sh
+```
+
+Documentación completa, units de systemd, ejemplo nginx + TLS y operación
+en [`deploy/README.md`](deploy/README.md).
+
 ## Despliegue solo-web (sin Python)
 
 El directorio `web/` es un sitio estático autocontenido. Para desplegarlo

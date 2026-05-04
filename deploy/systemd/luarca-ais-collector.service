@@ -1,0 +1,29 @@
+[Unit]
+Description=Luarca AIS WebSocket collector
+Documentation=https://github.com/pacascos/luarca-ais-tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__
+EnvironmentFile=__HOME__/.env
+ExecStart=__HOME__/.venv/bin/python __HOME__/collector.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__HOME__
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

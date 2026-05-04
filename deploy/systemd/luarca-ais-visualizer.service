@@ -1,0 +1,22 @@
+[Unit]
+Description=Luarca AIS map regeneration (oneshot, fired by timer)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__
+EnvironmentFile=__HOME__/.env
+ExecStart=__HOME__/.venv/bin/python __HOME__/visualizer.py
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__HOME__
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
