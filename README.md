@@ -152,10 +152,16 @@ Por orden de prioridad (umbrales en `config.py`):
 1. A menos de 1 NM del puerto → amarrado.
 2. Estado de navegación AIS 5 (amarrado) o 1 (fondeado) → amarrado.
 3. Estado de navegación AIS 7 (pescando) → pesca, salvo que navegue a
-   `≥ 8.0 kn`, en cuyo caso tránsito (es habitual dejar el estado puesto al
+   `≥ 6.0 kn`, en cuyo caso tránsito (es habitual dejar el estado puesto al
    volver a puerto).
-4. Sin estado concluyente, por velocidad sobre el fondo (SOG):
+4. Sin estado concluyente, por velocidad sobre el fondo (SOG, suavizada con
+   la mediana de 5 posiciones):
    - `≤ 0.5 kn` → amarrado
-   - `1.0 – 7.0 kn` → pesca
-   - `≥ 8.0 kn` → tránsito
+   - `1.0 – 5.0 kn` → pesca
+   - `≥ 6.0 kn` → tránsito
    - resto → slow_transit
+
+Umbrales calibrados con la flota de Luarca: fuera de puerto la velocidad es
+bimodal (0-3 kn largando o virando aparejo, con cambios de rumbo de 15-30°
+entre posiciones; 7-9 kn en tránsito con cambios de 4°). Entre 5 y 7 kn el
+rumbo ya es recto, así que se considera tránsito lento.

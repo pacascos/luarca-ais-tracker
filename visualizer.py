@@ -843,7 +843,8 @@ def build_index():
     tierra y los barcos pequeños o lejanos se pierden a ratos. Un viaje puede
     aparecer partido en dos si hubo más de media hora sin señal.</li>
     <li><b>"Pesca" es una deducción.</b> Se apoya en el estado que el barco declara en
-    su AIS y, si no lo declara, en su velocidad (entre 1 y 7 nudos). Un barco a la
+    su AIS y, si no lo declara, en su velocidad (entre 1 y 5 nudos; a más de 6 se
+    considera tránsito aunque declare pesca). Un barco a la
     deriva o navegando despacio puede confundirse con uno pescando.</li>
     <li><b>Un barco que no aparece no es que no haya salido.</b> Puede que su AIS
     estuviera apagado o fuera del alcance de las antenas.</li>

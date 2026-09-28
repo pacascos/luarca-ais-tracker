@@ -82,10 +82,14 @@ NAV_STATUS_FISHING = 7
 
 # Clasificación de actividad por velocidad (nudos), usada cuando el estado
 # de navegación no es concluyente
+# Calibrado con la flota de Luarca (sept. 2026): la velocidad es bimodal,
+# 0-3 kn largando/virando aparejo con muchos cambios de rumbo, y 7-9 kn en
+# tránsito con rumbo fijo. Entre 5 y 7 kn el rumbo ya es recto: es tránsito
+# lento, no pesca.
 SPEED_MOORED_MAX = 0.5       # Amarrado / fondeado
 SPEED_FISHING_MIN = 1.0      # Mínima para considerar pesca
-SPEED_FISHING_MAX = 7.0      # Máxima para considerar pesca
-SPEED_TRANSIT_MIN = 8.0      # Mínima para considerar tránsito
+SPEED_FISHING_MAX = 5.0      # Máxima para considerar pesca
+SPEED_TRANSIT_MIN = 6.0      # Mínima para considerar tránsito
 
 # Puertos de la zona (dentro del bounding box regional): (nombre, lat, lon,
 # radio NM). Una posición dentro del radio de cualquiera cuenta como "en
