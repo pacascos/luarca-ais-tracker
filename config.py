@@ -47,8 +47,13 @@ PESQUEROS_LUARCA = {
     1076589:  {"name": "RINCHADOR",            "mmsi": "224052340"},
     1050262:  {"name": "RIO XUNCO",            "mmsi": "224208650"},
 }
-FLEET_MMSI = frozenset(v["mmsi"] for v in PESQUEROS_LUARCA.values())
-FLEET_NAMES = {v["mmsi"]: v["name"] for v in PESQUEROS_LUARCA.values()}
+# Barcos que amarran habitualmente en Luarca pero no están en el grupo de
+# VesselTracker (detectados por sus posiciones en puerto).
+FLEET_EXTRA = {
+    "224028620": "NUEVO ENZO",
+}
+FLEET_NAMES = {v["mmsi"]: v["name"] for v in PESQUEROS_LUARCA.values()} | FLEET_EXTRA
+FLEET_MMSI = frozenset(FLEET_NAMES)
 
 
 def is_fishing_candidate(mmsi, ship_type=None):
@@ -81,7 +86,30 @@ SPEED_FISHING_MIN = 1.0      # Mínima para considerar pesca
 SPEED_FISHING_MAX = 7.0      # Máxima para considerar pesca
 SPEED_TRANSIT_MIN = 8.0      # Mínima para considerar tránsito
 
-# Radio (NM) alrededor del puerto en el que un barco se considera en puerto
+# Puertos de la zona (dentro del bounding box regional): (nombre, lat, lon,
+# radio NM). Una posición dentro del radio de cualquiera cuenta como "en
+# puerto" y no forma parte de ningún viaje. Sin esta lista, un barco
+# amarrado en Gijón aparecía como una sesión de tracking en el mar.
+PORTS = [
+    ("Luarca",              43.547, -6.536, 1.0),
+    ("Puerto de Vega",      43.563, -6.643, 0.7),
+    ("Navia",               43.545, -6.722, 1.0),
+    ("Ortiguera",           43.560, -6.803, 0.6),
+    ("Viavélez",            43.560, -6.853, 0.6),
+    ("Tapia de Casariego",  43.572, -6.943, 0.7),
+    ("Ribadeo",             43.540, -7.040, 1.2),
+    ("Foz",                 43.572, -7.252, 0.8),
+    ("Burela",              43.663, -7.357, 1.0),
+    ("San Cibrao",          43.710, -7.450, 1.5),
+    ("Cudillero",           43.566, -6.148, 0.7),
+    ("San Esteban de Pravia", 43.560, -6.082, 1.0),
+    ("Avilés",              43.578, -5.930, 2.0),
+    ("Luanco",              43.615, -5.792, 0.7),
+    ("Candás",              43.590, -5.760, 0.7),
+    ("Gijón (El Musel)",    43.560, -5.700, 2.0),
+    ("Gijón (marina)",      43.545, -5.663, 0.8),
+]
+# Radio (NM) alrededor de Luarca usado para dist_from_port (compatibilidad)
 PORT_RADIUS_NM = 1.0
 
 # Base de datos

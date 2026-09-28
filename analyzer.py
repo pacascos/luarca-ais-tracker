@@ -14,7 +14,7 @@ from config import (
     NAV_STATUS_AT_ANCHOR,
     NAV_STATUS_MOORED,
     NAV_STATUS_FISHING,
-    PORT_RADIUS_NM,
+    PORTS,
     SPEED_MOORED_MAX,
     SPEED_FISHING_MIN,
     SPEED_FISHING_MAX,
@@ -121,6 +121,17 @@ def haversine_nm(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 
+def in_any_port(lat, lon):
+    """True si la posición está dentro del radio de algún puerto conocido."""
+    for _name, plat, plon, radius in PORTS:
+        # Descarte rápido por caja (~1 NM = 0.0167° lat) antes del haversine
+        if abs(lat - plat) > radius * 0.02 or abs(lon - plon) > radius * 0.03:
+            continue
+        if haversine_nm(lat, lon, plat, plon) <= radius:
+            return True
+    return False
+
+
 def analyze_vessel_tracks(mmsi=None, since=None):
     """Analiza las tracks de barcos y clasifica segmentos de actividad.
 
@@ -133,12 +144,13 @@ def analyze_vessel_tracks(mmsi=None, since=None):
     if df.empty:
         return df
 
-    # Distancia al puerto de Luarca
+    # Distancia al puerto de Luarca y detección de "en puerto" (cualquiera
+    # de los puertos de la zona, ver config.PORTS)
     df["dist_from_port"] = [
         haversine_nm(lat, lon, LUARCA_LAT, LUARCA_LON)
         for lat, lon in zip(df["lat"], df["lon"])
     ]
-    df["in_port"] = df["dist_from_port"] <= PORT_RADIUS_NM
+    df["in_port"] = [in_any_port(lat, lon) for lat, lon in zip(df["lat"], df["lon"])]
 
     # Clasificar actividad
     df["activity"] = [
