@@ -763,11 +763,15 @@ def build_index():
     }
     .card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
     .card h3 { margin-top: 0; }
+    .card .q { color: #666; font-style: italic; font-size: 0.9rem; margin-bottom: 0; }
+    h2 { font-size: 1.15rem; margin-top: 2.5rem; }
+    ul { padding-left: 1.2rem; }
+    li { margin-bottom: 0.5rem; }
     footer { margin-top: 3rem; color: #888; font-size: 0.9rem; }
     @media (prefers-color-scheme: dark) {
       body { background: #1a1a1a; color: #eee; }
       .card { border-color: #444; }
-      .sub, footer { color: #aaa; }
+      .sub, footer, .card .q { color: #aaa; }
     }
   </style>
 </head>
@@ -775,23 +779,50 @@ def build_index():
   <h1>AIS Luarca</h1>
   <p class="sub">Rutas y zonas de pesca de la flota pesquera de Luarca (Golfo de Vizcaya) a partir de datos AIS.</p>
 
+  <p>Los barcos llevan un transmisor AIS que emite su posición, rumbo y velocidad
+  cada pocos segundos. Estos mapas recogen esas señales de los pesqueros de Luarca
+  (y del resto de la costa entre San Cibrao y Gijón) y las convierten en tres vistas
+  de la misma información. <b>Todos abren mostrando el último mes y solo la flota de
+  Luarca.</b> El panel inferior permite cambiar el periodo, ver un barco concreto o
+  ampliar a todos los barcos de la zona.</p>
+
   <div class="cards">
     <a class="card" href="mapa_tracks.html">
       <h3>Tracks de barcos</h3>
-      <p>Trayectorias completas coloreadas por actividad (pesca, tránsito, amarrado).</p>
+      <p><b>Dónde ha estado cada barco y qué hacía.</b> El recorrido completo,
+      coloreado por actividad: rojo pescando, azul en tránsito, gris parado,
+      naranja a velocidad intermedia.</p>
+      <p class="q">Responde a: ¿por dónde se mueve este barco?</p>
     </a>
     <a class="card" href="mapa_pesca.html">
       <h3>Zonas de pesca</h3>
-      <p>Mapa de calor + celdas clicables con detalle de barcos que pescaron en cada zona.</p>
+      <p><b>Dónde se concentra la pesca.</b> Mapa de calor con solo los momentos de
+      pesca; los círculos marcan las 20 celdas más frecuentadas. La capa "Detalle por
+      celda" muestra qué barcos pescaron en cada kilómetro cuadrado, cuántas veces y
+      en qué fechas.</p>
+      <p class="q">Responde a: ¿cuáles son los caladeros habituales? ¿quién pesca aquí?</p>
     </a>
     <a class="card" href="mapa_viajes.html">
       <h3>Viajes</h3>
-      <p>Viajes individuales puerto → mar → puerto con duración y porcentaje de pesca.</p>
+      <p><b>Cada marea, una a una.</b> Desde que el barco deja un puerto hasta que
+      vuelve: inicio en verde, fin en rojo, pesca en color y tránsito en gris
+      discontinuo. Al pinchar: barco, fecha, duración, distancia máxima y porcentaje
+      de tiempo pescando.</p>
+      <p class="q">Responde a: ¿cómo fue la salida del martes? ¿cuánto tarda en llegar al caladero?</p>
     </a>
   </div>
 
-  <p class="sub">Cada mapa abre con el último mes de datos; usa el panel inferior
-  para cambiar el periodo o elegir un barco.</p>
+  <h2>Cómo interpretarlos</h2>
+  <ul>
+    <li><b>La cobertura no es perfecta.</b> Las señales se reciben por antenas en
+    tierra y los barcos pequeños o lejanos se pierden a ratos. Un viaje puede
+    aparecer partido en dos si hubo más de media hora sin señal.</li>
+    <li><b>"Pesca" es una deducción.</b> Se apoya en el estado que el barco declara en
+    su AIS y, si no lo declara, en su velocidad (entre 1 y 7 nudos). Un barco a la
+    deriva o navegando despacio puede confundirse con uno pescando.</li>
+    <li><b>Un barco que no aparece no es que no haya salido.</b> Puede que su AIS
+    estuviera apagado o fuera del alcance de las antenas.</li>
+  </ul>
 
   <footer>
     Datos: aisstream.io + VesselTracker · Cartografía: OpenStreetMap, Esri Ocean,
