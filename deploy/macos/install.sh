@@ -22,7 +22,7 @@ PYTHON="$PROJECT_DIR/.venv/bin/python"
 PORT="${LUARCA_PORT:-8765}"
 BIND="${LUARCA_BIND:-0.0.0.0}"
 WEB_DIR="${WEB_DIR:-$HOME/luarca-ais-web}"
-LABELS=(com.luarca.ais.collector com.luarca.ais.visualizer com.luarca.ais.web)
+LABELS=(com.luarca.ais.collector com.luarca.ais.vtpoller com.luarca.ais.visualizer com.luarca.ais.web)
 
 if [[ $EUID -eq 0 ]]; then
   echo "No ejecutes esto con sudo: los LaunchAgents van en tu usuario." >&2
@@ -113,7 +113,7 @@ cat <<EOT
 
 ==> Listo.
 
-  Logs:        tail -f $LOG_DIR/collector.log
+  Logs:        tail -f $LOG_DIR/collector.log   (y vt_poller.log)
   Web:         http://localhost:$PORT/   (y desde la LAN por la IP de este Mac)
   Reiniciar:   launchctl kickstart -k gui/$UID/com.luarca.ais.collector
   Desinstalar: ./deploy/macos/uninstall.sh

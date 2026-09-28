@@ -5,9 +5,10 @@ Monta el stack completo en un Mac que esté siempre encendido: collector
 Todo corre como tu usuario mediante LaunchAgents, sin `sudo`.
 
 ```
-aisstream.io ──▶ collector.py ──▶ ais_luarca.db ──▶ visualizer.py ──▶ ~/luarca-ais-web/ ──▶ http.server :8765
-                 (LaunchAgent,      (en el clon)     (LaunchAgent,      (fuera del clon,      (LaunchAgent)
-                  KeepAlive)                          cada 5 min)        WEB_DIR en .env)
+aisstream.io ──▶ collector.py ─┐
+                               ├─▶ ais_luarca.db ──▶ visualizer.py ──▶ ~/luarca-ais-web/ ──▶ http.server :8765
+VesselTracker ─▶ vt_poller.py ─┘   (en el clon)     (LaunchAgent,      (fuera del clon,      (LaunchAgent)
+(antena propia)  (cada 2 min)                        cada 5 min)        WEB_DIR en .env)
 ```
 
 ## Instalación
@@ -69,6 +70,7 @@ Los mapas se escriben en `WEB_DIR` (por defecto `~/luarca-ais-web`), no en
 | Logs collector | `tail -f logs/collector.log` |
 | Logs mapas | `tail -f logs/visualizer.log` |
 | Reiniciar collector | `launchctl kickstart -k gui/$UID/com.luarca.ais.collector` |
+| Logs VesselTracker | `tail -f logs/vt_poller.log` |
 | Regenerar mapas ya | `launchctl kickstart gui/$UID/com.luarca.ais.visualizer` |
 | Parar todo | `./deploy/macos/uninstall.sh` |
 | Informe por consola | `.venv/bin/python analyzer.py --days 30` |

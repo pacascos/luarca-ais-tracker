@@ -124,6 +124,7 @@ Siguientes pasos:
 
   3. Habilita y arranca los servicios:
        sudo systemctl enable --now luarca-ais-collector.service
+       sudo systemctl enable --now luarca-ais-vtpoller.service
        sudo systemctl enable --now luarca-ais-visualizer.timer
        sudo systemctl enable --now luarca-ais-web.service
 

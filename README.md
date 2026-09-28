@@ -8,7 +8,8 @@ Seguimiento de rutas y zonas de pesca de la flota pesquera de Luarca
 ```
 .
 ├── collector.py        # Captura continua AIS vía aisstream.io (WebSocket)
-├── vesseltracker.py    # Snapshots puntuales vía VesselTracker REST API
+├── vesseltracker.py    # Cliente VesselTracker REST API + snapshot manual
+├── vt_poller.py        # Sondeo continuo de VesselTracker (flota de Luarca vía antena propia)
 ├── analyzer.py         # Clasifica actividad (pesca/tránsito/amarrado), detecta viajes, agrega zonas
 ├── visualizer.py       # Genera los 3 mapas HTML (Folium)
 ├── migrate_db.py       # Normaliza/limpia una BD de versiones anteriores
@@ -97,6 +98,9 @@ python collector.py
 # Snapshot puntual vía VesselTracker
 python vesseltracker.py
 
+# Sondeo continuo de VesselTracker (cada 2 min; VT_POLL_INTERVAL en .env)
+python vt_poller.py
+
 # Regenerar los mapas a web/
 python visualizer.py
 python visualizer.py --days 90        # limitar el histórico embebido
@@ -132,9 +136,14 @@ recibir un mensaje duplicado no crea filas nuevas.
 ## Fuentes de datos
 
 - [aisstream.io](https://aisstream.io) — WebSocket gratuito con datos AIS
-  en tiempo real (filtrado por bounding box).
+  en tiempo real (filtrado por bounding box). Sus receptores apenas captan
+  a los pesqueros pequeños de Luarca: en 5 meses, la mayoría de la flota
+  tenía una sola posición.
 - [VesselTracker](https://www.vesseltracker.com) — API REST (cuenta
-  Antenna Operator, estación física VT-6372 en Luarca).
+  Antenna Operator, estación física VT-6372 en Luarca). Es la fuente que
+  realmente ve a la flota. `vt_poller.py` consulta la zona regional cada
+  2 minutos (una llamada) y guarda las posiciones nuevas; `lastSeen`
+  tiene precisión de minuto y la BD ignora duplicados.
 
 ## Clasificación de actividad
 
