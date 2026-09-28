@@ -95,7 +95,10 @@ def classify_activity(sog, nav_status=None, in_port=False):
     en tránsito (es habitual dejar el estado puesto al volver a puerto).
     """
     if in_port:
-        return "moored"
+        # Dentro del puerto nunca se pesca; si va a velocidad es que entra o sale
+        if sog is None or math.isnan(sog) or sog <= SPEED_FISHING_MIN:
+            return "moored"
+        return "transit" if sog >= SPEED_TRANSIT_MIN else "slow_transit"
     if nav_status in (NAV_STATUS_MOORED, NAV_STATUS_AT_ANCHOR):
         return "moored"
     if sog is None or math.isnan(sog):
@@ -152,20 +155,28 @@ def analyze_vessel_tracks(mmsi=None, since=None):
     ]
     df["in_port"] = [in_any_port(lat, lon) for lat, lon in zip(df["lat"], df["lon"])]
 
-    # Clasificar actividad
+    # Clasificar actividad. La velocidad se suaviza con una mediana móvil de
+    # 5 posiciones por barco: un pesquero navegando a 8-9 kn oscila entre
+    # 7.5 y 9.5 y, sin suavizar, cada bajada puntual por debajo del umbral
+    # aparecía como un tramo de "pesca" de un minuto.
+    df = df.sort_values(["mmsi", "timestamp"]).reset_index(drop=True)
+    df["sog_smooth"] = (
+        df.groupby("mmsi")["sog"]
+        .transform(lambda x: x.rolling(5, center=True, min_periods=1).median())
+    )
     df["activity"] = [
         classify_activity(sog, _int_or_none(nav), in_port)
-        for sog, nav, in_port in zip(df["sog"], df["nav_status"], df["in_port"])
+        for sog, nav, in_port in zip(df["sog_smooth"], df["nav_status"], df["in_port"])
     ]
 
     # Asignar trip_id por barco. El receptor rara vez captura al barco entrando
     # o saliendo del puerto, así que en la práctica un "viaje" es una sesión
     # continua de tracking: lo cortamos al detectar puerto, un gap > 30 min,
-    # o un salto > 1.5 NM entre dos posiciones consecutivas.
+    # o un salto imposible (velocidad implícita > 25 kn) entre dos posiciones
+    # consecutivas. Antes se cortaba por distancia fija (1.5 NM), lo que
+    # partía tracks legítimos cuando pasaban 12 minutos sin señal a 8 kn.
     TRIP_GAP_MINUTES = 30
-    TRIP_MAX_SEGMENT_NM = 1.5
-
-    df = df.sort_values(["mmsi", "timestamp"]).reset_index(drop=True)
+    TRIP_MAX_IMPLIED_KN = 25.0
 
     trip_id = 0
     trip_ids = []
@@ -183,13 +194,12 @@ def analyze_vessel_tracks(mmsi=None, since=None):
             prev_lat = None
             prev_lon = None
 
-        gap_too_large = (
-            prev_time is not None
-            and (row.timestamp - prev_time).total_seconds() > TRIP_GAP_MINUTES * 60
-        )
+        dt_h = ((row.timestamp - prev_time).total_seconds() / 3600
+                if prev_time is not None else None)
+        gap_too_large = dt_h is not None and dt_h > TRIP_GAP_MINUTES / 60
         jump_too_large = (
-            prev_lat is not None
-            and haversine_nm(prev_lat, prev_lon, row.lat, row.lon) > TRIP_MAX_SEGMENT_NM
+            prev_lat is not None and dt_h is not None
+            and haversine_nm(prev_lat, prev_lon, row.lat, row.lon) > TRIP_MAX_IMPLIED_KN * max(dt_h, 1 / 60)
         )
 
         if row.in_port:

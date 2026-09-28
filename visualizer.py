@@ -655,10 +655,12 @@ TRIPS_JS = r"""
         var popup =
             '<b>' + (NAMES[t.mmsi] || t.mmsi) + '</b><br>' +
             'MMSI: ' + t.mmsi + ' · Sesión #' + t.trip_id + '<br>' +
-            fmt(t.start) + ' &rarr; ' + fmt(t.end) + '<br>' +
-            'Duración: ' + t.duration_h.toFixed(1) + ' h<br>' +
-            'Max dist: ' + t.max_dist_nm.toFixed(1) + ' NM<br>' +
-            'Pesca: ' + t.pct_fishing.toFixed(0) + '%';
+            'Señal recibida: ' + fmt(t.start) + ' &rarr; ' + fmt(t.end) + '<br>' +
+            'Duración con señal: ' + t.duration_h.toFixed(1) + ' h<br>' +
+            'Distancia máx. a Luarca: ' + t.max_dist_nm.toFixed(1) + ' NM<br>' +
+            'Tiempo pescando: ' + t.pct_fishing.toFixed(0) + '%' +
+            '<div style="color:#777;font-size:11px;margin-top:4px">Solo el tramo con cobertura AIS; ' +
+            'la salida o la pesca lejos de la costa pueden faltar.</div>';
         // Tramos agrupados por actividad: la pesca en color y grueso, el
         // tránsito fino y gris para que no tape lo importante.
         var runs = [], cur = null;
@@ -682,11 +684,11 @@ TRIPS_JS = r"""
         L.circleMarker(latlngs[0], {
           radius: 4, color: '#2ecc71', fillColor: '#2ecc71',
           fillOpacity: 0.9, weight: 2
-        }).bindPopup(vessel + '<br>Inicio: ' + fmt(t.start)).addTo(layer);
+        }).bindPopup(vessel + '<br>Primera señal recibida: ' + fmt(t.start)).addTo(layer);
         L.circleMarker(latlngs[latlngs.length - 1], {
           radius: 4, color: '#e74c3c', fillColor: '#e74c3c',
           fillOpacity: 0.9, weight: 2
-        }).bindPopup(vessel + '<br>Fin: ' + fmt(t.end)).addTo(layer);
+        }).bindPopup(vessel + '<br>Última señal recibida: ' + fmt(t.end)).addTo(layer);
       }
       window.setFilterStats('<b>' + trips.length + '</b> viajes');
     }
