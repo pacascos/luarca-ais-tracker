@@ -11,7 +11,12 @@ from folium.plugins import HeatMap
 from config import LUARCA_LAT, LUARCA_LON
 from analyzer import analyze_vessel_tracks, get_trip_summary, load_vessels
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+# Directorio de salida de los mapas. En un despliegue permanente conviene
+# sacarlo fuera del clon de git (WEB_DIR en .env) para que `git pull` no
+# choque con los HTML regenerados.
+WEB_DIR = os.getenv("WEB_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "web"
+)
 
 # Periodo mostrado por defecto al abrir un mapa (el slider permite ampliarlo
 # hasta todo el histórico embebido en la página).

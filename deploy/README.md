@@ -1,3 +1,6 @@
+> **macOS:** este documento es para Linux con systemd. Para un Mac siempre
+> encendido usa [`deploy/macos/README.md`](macos/README.md) (launchd, sin sudo).
+
 # Despliegue en servidor Linux
 
 Este directorio contiene todo lo necesario para desplegar el stack AIS Luarca

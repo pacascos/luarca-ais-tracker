@@ -55,6 +55,16 @@ sudo ./deploy/install.sh
 Documentación completa, units de systemd, ejemplo nginx + TLS y operación
 en [`deploy/README.md`](deploy/README.md).
 
+## Despliegue completo en un Mac siempre encendido
+
+Mismo stack con LaunchAgents (sin `sudo`):
+
+```bash
+./deploy/macos/install.sh
+```
+
+Guía completa en [`deploy/macos/README.md`](deploy/macos/README.md).
+
 ## Despliegue solo-web (sin Python)
 
 El directorio `web/` es un sitio estático autocontenido. Para desplegarlo
