@@ -171,7 +171,6 @@ FILTER_PANEL_TEMPLATE = r"""
     padding:3px 10px; border:1px solid #aaa; border-radius:4px; background:#fff;
     font-size:12px; cursor:pointer;
   }
-  #df-panel button.active { background:__COLOR__; color:#fff; border-color:__COLOR__; }
   #df-panel .noUi-connect { background: __COLOR__; }
   #df-panel .noUi-horizontal { height: 12px; }
   #df-panel .noUi-horizontal .noUi-handle {
@@ -188,8 +187,15 @@ FILTER_PANEL_TEMPLATE = r"""
       &nbsp;·&nbsp; <span id="df-stats"></span>
     </span>
     <select id="df-vessel"></select>
-    <button id="df-month" title="Últimos __DAYS__ días">Último mes</button>
-    <button id="df-all" title="Todo el histórico">Todo</button>
+    <select id="df-range" title="Periodo mostrado">
+      <option value="0">Hoy</option>
+      <option value="7">Última semana</option>
+      <option value="30">Último mes</option>
+      <option value="90">Últimos 90 días</option>
+      <option value="180">Últimos 180 días</option>
+      <option value="all">Todo el histórico</option>
+      <option value="custom" disabled hidden>Personalizado</option>
+    </select>
   </div>
   <div id="df-slider" style="margin: 10px 8px 0;"></div>
 </div>
@@ -200,10 +206,20 @@ FILTER_PANEL_TEMPLATE = r"""
 // permitidos, o null para todos.
 window.setupFilters = function(opts){
   var DAY = 24*60*60*1000;
-  var WINDOW = __DAYS__ * DAY;
-  var MIN_TS = opts.minTs, MAX_TS = opts.maxTs;
+  function midnight(ts){ var d = new Date(ts); d.setHours(0,0,0,0); return d.getTime(); }
+  // Rango alineado a medianoche local para que el paso de un día caiga en días enteros
+  var MIN_TS = midnight(opts.minTs);
+  var MAX_TS = midnight(opts.maxTs) + DAY;
   if (MAX_TS <= MIN_TS) MAX_TS = MIN_TS + DAY;
-  var DEFAULT_LO = Math.max(MIN_TS, MAX_TS - WINDOW);
+  var TODAY = midnight(Date.now());
+  var rangeSel = document.getElementById('df-range');
+  function presetLo(v){
+    if (v === 'all') return MIN_TS;
+    if (v === '0') return Math.max(MIN_TS, Math.min(TODAY, MAX_TS - DAY));
+    return Math.max(MIN_TS, MAX_TS - (+v) * DAY);
+  }
+  var DEFAULT_PRESET = '__DAYS__';
+  var DEFAULT_LO = presetLo(DEFAULT_PRESET);
 
   function pad(n){ return n.toString().padStart(2, '0'); }
   function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
@@ -235,21 +251,26 @@ window.setupFilters = function(opts){
     step: DAY, behaviour: 'drag-tap',
   });
 
-  var btnMonth = document.getElementById('df-month');
-  var btnAll = document.getElementById('df-all');
-  function markButtons(lo, hi){
-    btnAll.classList.toggle('active', lo <= MIN_TS && hi >= MAX_TS);
-    btnMonth.classList.toggle('active', Math.abs(lo - DEFAULT_LO) < DAY && hi >= MAX_TS && DEFAULT_LO > MIN_TS);
+  function syncPreset(lo, hi){
+    // Selecciona en el desplegable el preajuste que coincide con el slider, si hay
+    var match = 'custom';
+    if (hi >= MAX_TS){
+      var opts_ = ['all','0','7','30','90','180'];   // 'all' primero: si el histórico es corto, gana
+      for (var i = 0; i < opts_.length; i++){
+        if (Math.abs(presetLo(opts_[i]) - lo) < DAY / 2){ match = opts_[i]; break; }
+      }
+    }
+    rangeSel.value = match;
   }
   function apply(values){
     var lo = +values[0], hi = +values[1];
-    markButtons(lo, hi);
-    opts.onChange(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi + DAY - 1, allowed());
+    syncPreset(lo, hi);
+    opts.onChange(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi - 1, allowed());
   }
 
   slider.noUiSlider.on('update', function(values){
     document.getElementById('df-min').textContent = fmtDate(+values[0]);
-    document.getElementById('df-max').textContent = fmtDate(+values[1]);
+    document.getElementById('df-max').textContent = fmtDate(+values[1] - 1);
   });
   var pending = null;
   slider.noUiSlider.on('slide', function(values){
@@ -258,8 +279,10 @@ window.setupFilters = function(opts){
   });
   slider.noUiSlider.on('set', function(values){ apply(values); });
   sel.addEventListener('change', function(){ apply(slider.noUiSlider.get()); });
-  btnMonth.addEventListener('click', function(){ slider.noUiSlider.set([DEFAULT_LO, MAX_TS]); });
-  btnAll.addEventListener('click', function(){ slider.noUiSlider.set([MIN_TS, MAX_TS]); });
+  rangeSel.addEventListener('change', function(){
+    if (rangeSel.value === 'custom') return;
+    slider.noUiSlider.set([presetLo(rangeSel.value), MAX_TS]);
+  });
 
   apply(slider.noUiSlider.get());
 };
