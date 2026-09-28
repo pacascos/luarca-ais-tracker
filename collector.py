@@ -5,7 +5,7 @@ import json
 import logging
 import signal
 import sys
-from datetime import datetime, timezone
+import time
 
 import websockets
 
@@ -13,10 +13,9 @@ from config import (
     AISSTREAM_API_KEY,
     AISSTREAM_WS_URL,
     ACTIVE_BBOX,
-    SHIP_TYPE_FISHING,
-    SPANISH_MMSI_PREFIXES,
+    is_fishing_candidate,
 )
-from db import init_db, upsert_vessel, insert_position
+from db import init_db, upsert_vessel, insert_position, load_ship_types, open_conn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +24,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+COMMIT_EVERY_SECONDS = 5
+COMMIT_EVERY_POSITIONS = 50
+
 # Estadísticas de sesión
-stats = {"messages": 0, "positions_saved": 0, "vessels_seen": set()}
+stats = {"messages": 0, "positions_saved": 0, "skipped": 0, "vessels_seen": set()}
+
+# Cache en memoria {mmsi: ship_type} para filtrar PositionReports, cuyo
+# MetaData no incluye el tipo de barco.
+ship_types = {}
 
 
 def build_subscription():
@@ -38,32 +44,24 @@ def build_subscription():
     }
 
 
-def is_fishing_vessel(mmsi, ship_type=None):
-    """Determina si un barco es pesquero (por tipo AIS o MMSI español)."""
-    if ship_type == SHIP_TYPE_FISHING:
-        return True
-    # Si no sabemos el tipo, aceptamos barcos españoles para no perder datos
-    mmsi_str = str(mmsi)
-    return mmsi_str.startswith(SPANISH_MMSI_PREFIXES)
-
-
-def process_position_report(message):
-    """Procesa un mensaje de tipo PositionReport."""
+def process_position_report(message, conn):
+    """Procesa un mensaje de tipo PositionReport. Devuelve True si guardó."""
     meta = message.get("MetaData", {})
     report = message.get("Message", {}).get("PositionReport", {})
     if not report:
-        return
+        return False
 
     mmsi = str(meta.get("MMSI", ""))
-    ship_type = meta.get("ShipType")
+    if not is_fishing_candidate(mmsi, ship_types.get(mmsi)):
+        stats["skipped"] += 1
+        return False
 
-    timestamp = meta.get("time_utc", datetime.now(timezone.utc).isoformat())
     lat = report.get("Latitude")
     lon = report.get("Longitude")
-
     if lat is None or lon is None:
-        return
+        return False
 
+    timestamp = meta.get("time_utc") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     sog = report.get("Sog")
     cog = report.get("Cog")
     heading = report.get("TrueHeading")
@@ -71,22 +69,30 @@ def process_position_report(message):
     rot = report.get("RateOfTurn")
 
     # Actualizar vessel primero (FK)
-    name = meta.get("ShipName", "").strip()
-    upsert_vessel(mmsi, name=name if name else None, ship_type=ship_type)
+    name = (meta.get("ShipName") or "").strip()
+    upsert_vessel(mmsi, name=name or None, conn=conn)
+    ship_types.setdefault(mmsi, None)
 
-    # Guardar posición
-    insert_position(mmsi, timestamp, lat, lon, sog, cog, heading, nav_status, rot)
+    saved = insert_position(mmsi, timestamp, lat, lon, sog, cog, heading,
+                            nav_status, rot, conn=conn)
+    if not saved:
+        return False
+
     stats["positions_saved"] += 1
     stats["vessels_seen"].add(mmsi)
-
     log.info(
-        "POS %s (%s) lat=%.4f lon=%.4f sog=%.1f cog=%.1f",
-        mmsi, name or "?", lat, lon, sog or 0, cog or 0,
+        "POS %s (%s) lat=%.4f lon=%.4f sog=%.1f cog=%.1f nav=%s",
+        mmsi, name or "?", lat, lon, sog or 0, cog or 0, nav_status,
     )
+    return True
 
 
-def process_static_data(message):
-    """Procesa un mensaje de tipo ShipStaticData."""
+def process_static_data(message, conn):
+    """Procesa un mensaje de tipo ShipStaticData.
+
+    Se guarda para todos los barcos (no solo pesqueros) para aprender su tipo
+    y poder descartar sus posiciones a partir de ese momento.
+    """
     meta = message.get("MetaData", {})
     static = message.get("Message", {}).get("ShipStaticData", {})
     if not static:
@@ -95,31 +101,74 @@ def process_static_data(message):
     mmsi = str(meta.get("MMSI", ""))
     ship_type = static.get("Type")
 
-    name = meta.get("ShipName", "").strip()
-    callsign = static.get("CallSign", "").strip()
-    imo = str(static.get("ImoNumber", "")) if static.get("ImoNumber") else None
-    dimension = static.get("Dimension", {})
-    length = None
-    width = None
+    name = (meta.get("ShipName") or "").strip()
+    callsign = (static.get("CallSign") or "").strip()
+    imo = str(static.get("ImoNumber")) if static.get("ImoNumber") else None
+    dimension = static.get("Dimension") or {}
+    length = width = None
     if dimension:
-        a = dimension.get("A", 0) or 0
-        b = dimension.get("B", 0) or 0
-        c = dimension.get("C", 0) or 0
-        d = dimension.get("D", 0) or 0
+        a = dimension.get("A") or 0
+        b = dimension.get("B") or 0
+        c = dimension.get("C") or 0
+        d = dimension.get("D") or 0
         length = a + b if (a + b) > 0 else None
         width = c + d if (c + d) > 0 else None
 
     upsert_vessel(
         mmsi,
-        name=name if name else None,
+        name=name or None,
         ship_type=ship_type,
         length=length,
         width=width,
-        callsign=callsign if callsign else None,
+        callsign=callsign or None,
         imo=imo,
+        conn=conn,
     )
+    if ship_type is not None:
+        ship_types[mmsi] = ship_type
 
     log.info("STATIC %s name=%s type=%s len=%s", mmsi, name, ship_type, length)
+
+
+async def session(ws):
+    """Consume mensajes de una conexión WebSocket con una conexión SQLite
+    persistente y commits por lotes."""
+    conn = open_conn()
+    last_commit = time.monotonic()
+    pending = 0
+    try:
+        async for raw in ws:
+            stats["messages"] += 1
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = message.get("MessageType", "")
+            if msg_type == "PositionReport":
+                if process_position_report(message, conn):
+                    pending += 1
+            elif msg_type == "ShipStaticData":
+                process_static_data(message, conn)
+                pending += 1
+
+            now = time.monotonic()
+            if pending and (pending >= COMMIT_EVERY_POSITIONS
+                            or now - last_commit >= COMMIT_EVERY_SECONDS):
+                conn.commit()
+                pending = 0
+                last_commit = now
+
+            if stats["messages"] % 500 == 0:
+                log.info(
+                    "--- Stats: %d mensajes, %d posiciones guardadas, "
+                    "%d descartadas (no pesqueros), %d barcos únicos ---",
+                    stats["messages"], stats["positions_saved"],
+                    stats["skipped"], len(stats["vessels_seen"]),
+                )
+    finally:
+        conn.commit()
+        conn.close()
 
 
 async def collect():
@@ -130,6 +179,8 @@ async def collect():
         sys.exit(1)
 
     init_db()
+    ship_types.update(load_ship_types())
+    log.info("Tipos de barco conocidos: %d", len(ship_types))
     log.info("Conectando a aisstream.io...")
     log.info("Bounding box: %s", ACTIVE_BBOX)
 
@@ -138,33 +189,13 @@ async def collect():
     while True:
         try:
             async with websockets.connect(AISSTREAM_WS_URL) as ws:
-                sub = build_subscription()
-                await ws.send(json.dumps(sub))
+                await ws.send(json.dumps(build_subscription()))
                 log.info("Suscripción enviada. Esperando datos...")
                 reconnect_delay = 5
+                await session(ws)
 
-                async for raw in ws:
-                    stats["messages"] += 1
-                    try:
-                        message = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-
-                    msg_type = message.get("MessageType", "")
-
-                    if msg_type == "PositionReport":
-                        process_position_report(message)
-                    elif msg_type == "ShipStaticData":
-                        process_static_data(message)
-
-                    if stats["messages"] % 100 == 0:
-                        log.info(
-                            "--- Stats: %d mensajes, %d posiciones guardadas, %d barcos únicos ---",
-                            stats["messages"],
-                            stats["positions_saved"],
-                            len(stats["vessels_seen"]),
-                        )
-
+        except asyncio.CancelledError:
+            raise
         except websockets.exceptions.ConnectionClosed as e:
             log.warning("Conexión cerrada: %s. Reconectando en %ds...", e, reconnect_delay)
         except Exception as e:
@@ -174,22 +205,22 @@ async def collect():
         reconnect_delay = min(reconnect_delay * 2, 60)
 
 
-def main():
-    loop = asyncio.new_event_loop()
-
-    def shutdown(sig, frame):
+async def main_async():
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, task.cancel)
+    try:
+        await collect()
+    except asyncio.CancelledError:
         log.info(
             "Parando collector. %d posiciones guardadas de %d barcos.",
-            stats["positions_saved"],
-            len(stats["vessels_seen"]),
+            stats["positions_saved"], len(stats["vessels_seen"]),
         )
-        loop.stop()
-        sys.exit(0)
 
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
 
-    loop.run_until_complete(collect())
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

@@ -25,13 +25,64 @@ ACTIVE_BBOX = BBOX_REGIONAL
 
 # Filtros de barcos pesqueros
 SHIP_TYPE_FISHING = 30
+SHIP_TYPES_UNKNOWN = (None, 0)          # 0 = "not available" en AIS
 SPANISH_MMSI_PREFIXES = ("224", "225")
 
-# Clasificación de actividad por velocidad (nudos)
+# Flota pesquera de Luarca: VesselTracker ID -> {name, mmsi}
+PESQUEROS_LUARCA = {
+    2767978:  {"name": "YODAM",                "mmsi": "224218130"},
+    3224248:  {"name": "GAMUSIN",              "mmsi": "224249880"},
+    368041:   {"name": "NAGORE II",            "mmsi": "224221940"},
+    1543738:  {"name": "NUEVO HERMANOS POLA",  "mmsi": "224218660"},
+    1745130:  {"name": "TRES HN0S CACHAREL0S", "mmsi": "224094590"},
+    3113789:  {"name": "ISLA ERBOSA",          "mmsi": "224159140"},
+    2157044:  {"name": "MADIMAR",              "mmsi": "224067630"},
+    1760268:  {"name": "MADRE RAFAELA",        "mmsi": "224026280"},
+    377843:   {"name": "NAVEOTE",              "mmsi": "224062390"},
+    2733777:  {"name": "JOSERCRIS",            "mmsi": "225993201"},
+    1538922:  {"name": "MUNDAKA",              "mmsi": "224085560"},
+    799611:   {"name": "NUEVO SOCIO",          "mmsi": "224181230"},
+    888235:   {"name": "PICO SACRO",           "mmsi": "224095140"},
+    1050022:  {"name": "REGINO JESUS",         "mmsi": "224081130"},
+    1076589:  {"name": "RINCHADOR",            "mmsi": "224052340"},
+    1050262:  {"name": "RIO XUNCO",            "mmsi": "224208650"},
+}
+FLEET_MMSI = frozenset(v["mmsi"] for v in PESQUEROS_LUARCA.values())
+FLEET_NAMES = {v["mmsi"]: v["name"] for v in PESQUEROS_LUARCA.values()}
+
+
+def is_fishing_candidate(mmsi, ship_type=None):
+    """Decide si un barco entra en el análisis de pesca.
+
+    Entra si pertenece a la flota de Luarca, si declara tipo AIS pesquero,
+    o si es español y aún no conocemos su tipo (para no perder datos hasta
+    que llegue su ShipStaticData). Un barco español con tipo conocido no
+    pesquero (carguero, tanque...) queda fuera.
+    """
+    mmsi = str(mmsi)
+    if mmsi in FLEET_MMSI:
+        return True
+    if ship_type == SHIP_TYPE_FISHING:
+        return True
+    if ship_type in SHIP_TYPES_UNKNOWN:
+        return mmsi.startswith(SPANISH_MMSI_PREFIXES)
+    return False
+
+
+# Estados de navegación AIS relevantes
+NAV_STATUS_AT_ANCHOR = 1
+NAV_STATUS_MOORED = 5
+NAV_STATUS_FISHING = 7
+
+# Clasificación de actividad por velocidad (nudos), usada cuando el estado
+# de navegación no es concluyente
 SPEED_MOORED_MAX = 0.5       # Amarrado / fondeado
 SPEED_FISHING_MIN = 1.0      # Mínima para considerar pesca
 SPEED_FISHING_MAX = 7.0      # Máxima para considerar pesca
 SPEED_TRANSIT_MIN = 8.0      # Mínima para considerar tránsito
+
+# Radio (NM) alrededor del puerto en el que un barco se considera en puerto
+PORT_RADIUS_NM = 1.0
 
 # Base de datos
 DB_PATH = os.getenv("DB_PATH", "ais_luarca.db")

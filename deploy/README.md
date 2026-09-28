@@ -84,6 +84,8 @@ Variables de entorno opcionales antes de lanzar `install.sh`:
    ```bash
    sudo install -o luarca -g luarca -m 644 /tmp/ais_luarca.db /opt/luarca-ais/ais_luarca.db
    sudo rm /tmp/ais_luarca.db
+   # Si la BD viene de una versión anterior (timestamps sin normalizar):
+   sudo -u luarca /opt/luarca-ais/.venv/bin/python /opt/luarca-ais/migrate_db.py
    ```
 
 3. **Habilitar y arrancar los servicios:**

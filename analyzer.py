@@ -2,23 +2,48 @@
 
 import math
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
 from config import (
     DB_PATH,
+    FLEET_NAMES,
     LUARCA_LAT,
     LUARCA_LON,
+    NAV_STATUS_AT_ANCHOR,
+    NAV_STATUS_MOORED,
+    NAV_STATUS_FISHING,
+    PORT_RADIUS_NM,
     SPEED_MOORED_MAX,
     SPEED_FISHING_MIN,
     SPEED_FISHING_MAX,
     SPEED_TRANSIT_MIN,
+    is_fishing_candidate,
 )
+from db import normalize_ts
 
 
-def load_positions(mmsi=None, since=None):
-    """Carga posiciones desde la BD. Opcionalmente filtra por MMSI y fecha."""
+def load_vessels():
+    """Carga la tabla de barcos, completando nombres con la lista de la flota."""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT * FROM vessels", conn)
+    conn.close()
+    if not df.empty:
+        df["name"] = df["name"].where(df["name"].notna() & (df["name"] != ""),
+                                      df["mmsi"].map(FLEET_NAMES))
+    return df
+
+
+def load_positions(mmsi=None, since=None, fishing_only=True):
+    """Carga posiciones desde la BD.
+
+    Args:
+        mmsi: filtra por un MMSI concreto.
+        since: fecha mínima (str ISO o datetime).
+        fishing_only: descarta barcos con tipo AIS conocido no pesquero
+            (ver config.is_fishing_candidate).
+    """
     conn = sqlite3.connect(DB_PATH)
     query = "SELECT * FROM positions"
     conditions = []
@@ -26,10 +51,10 @@ def load_positions(mmsi=None, since=None):
 
     if mmsi:
         conditions.append("mmsi = ?")
-        params.append(mmsi)
+        params.append(str(mmsi))
     if since:
         conditions.append("timestamp >= ?")
-        params.append(since)
+        params.append(normalize_ts(since))
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -37,31 +62,46 @@ def load_positions(mmsi=None, since=None):
 
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
+    if df.empty:
+        return df
 
-    if not df.empty:
-        # Formatos mixtos: aisstream.io ("2026-04-06 02:18:20.910198854 +0000 UTC")
-        # y VesselTracker ("2026-04-06T16:00+0200")
-        df["timestamp"] = (
-            df["timestamp"]
-            .str.replace(r"\.\d+ \+0000 UTC$", "", regex=True)
-            .pipe(pd.to_datetime, format="mixed", utc=True)
+    if fishing_only:
+        types = dict(zip(*[load_vessels()[c] for c in ("mmsi", "ship_type")]))
+        keep = df["mmsi"].map(
+            lambda m: is_fishing_candidate(m, _int_or_none(types.get(m)))
         )
-        df["timestamp"] = df["timestamp"].dt.tz_localize(None)
+        df = df[keep].reset_index(drop=True)
+
+    # Tolera BDs sin migrar (formatos aisstream / VesselTracker mezclados)
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"].map(normalize_ts), format="%Y-%m-%dT%H:%M:%SZ", utc=True
+    ).dt.tz_localize(None)
     return df
 
 
-def load_vessels():
-    """Carga la tabla de barcos."""
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM vessels", conn)
-    conn.close()
-    return df
+def _int_or_none(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    return int(v)
 
 
-def classify_activity(sog):
-    """Clasifica la actividad según la velocidad sobre el fondo (SOG)."""
+def classify_activity(sog, nav_status=None, in_port=False):
+    """Clasifica la actividad de una posición.
+
+    Prioridad: en puerto -> amarrado; estado de navegación AIS explícito
+    (amarrado / fondeado / pescando); y como respaldo la velocidad (SOG),
+    porque muchos patrones no actualizan el estado de navegación. Un barco
+    que declara "pescando" pero navega a velocidad de tránsito se considera
+    en tránsito (es habitual dejar el estado puesto al volver a puerto).
+    """
+    if in_port:
+        return "moored"
+    if nav_status in (NAV_STATUS_MOORED, NAV_STATUS_AT_ANCHOR):
+        return "moored"
     if sog is None or math.isnan(sog):
-        return "unknown"
+        return "fishing" if nav_status == NAV_STATUS_FISHING else "unknown"
+    if nav_status == NAV_STATUS_FISHING:
+        return "transit" if sog >= SPEED_TRANSIT_MIN else "fishing"
     if sog <= SPEED_MOORED_MAX:
         return "moored"
     if SPEED_FISHING_MIN <= sog <= SPEED_FISHING_MAX:
@@ -87,28 +127,31 @@ def analyze_vessel_tracks(mmsi=None, since=None):
     Retorna un DataFrame con cada posición enriquecida con:
     - activity: moored/fishing/transit/slow_transit/unknown
     - dist_from_port: distancia a Luarca en NM
-    - trip_id: identificador de viaje (sale del puerto y vuelve)
+    - trip_id: identificador de sesión de tracking (0 = en puerto)
     """
     df = load_positions(mmsi=mmsi, since=since)
     if df.empty:
         return df
 
-    # Clasificar actividad por velocidad
-    df["activity"] = df["sog"].apply(classify_activity)
-
     # Distancia al puerto de Luarca
-    df["dist_from_port"] = df.apply(
-        lambda r: haversine_nm(r["lat"], r["lon"], LUARCA_LAT, LUARCA_LON), axis=1
-    )
+    df["dist_from_port"] = [
+        haversine_nm(lat, lon, LUARCA_LAT, LUARCA_LON)
+        for lat, lon in zip(df["lat"], df["lon"])
+    ]
+    df["in_port"] = df["dist_from_port"] <= PORT_RADIUS_NM
+
+    # Clasificar actividad
+    df["activity"] = [
+        classify_activity(sog, _int_or_none(nav), in_port)
+        for sog, nav, in_port in zip(df["sog"], df["nav_status"], df["in_port"])
+    ]
 
     # Asignar trip_id por barco. El receptor rara vez captura al barco entrando
     # o saliendo del puerto, así que en la práctica un "viaje" es una sesión
     # continua de tracking: lo cortamos al detectar puerto, un gap > 30 min,
     # o un salto > 1.5 NM entre dos posiciones consecutivas.
-    PORT_RADIUS_NM = 1.0
     TRIP_GAP_MINUTES = 30
     TRIP_MAX_SEGMENT_NM = 1.5
-    df["in_port"] = df["dist_from_port"] <= PORT_RADIUS_NM
 
     df = df.sort_values(["mmsi", "timestamp"]).reset_index(drop=True)
 
@@ -159,7 +202,7 @@ def get_fishing_zones(df=None, mmsi=None, since=None, grid_size=0.01):
     Args:
         grid_size: tamaño de celda en grados (~1 km a esta latitud)
 
-    Retorna DataFrame con columnas: lat_grid, lon_grid, count, avg_sog, hours_fishing
+    Retorna DataFrame con columnas: lat_grid, lon_grid, count, avg_sog, vessels
     """
     if df is None:
         df = analyze_vessel_tracks(mmsi=mmsi, since=since)
@@ -278,7 +321,7 @@ def print_report(since=None):
     """Imprime un resumen por consola."""
     vessels = load_vessels()
     print(f"\n{'='*60}")
-    print(f"INFORME AIS LUARCA")
+    print("INFORME AIS LUARCA")
     print(f"{'='*60}")
     print(f"Barcos registrados: {len(vessels)}")
 
@@ -286,11 +329,14 @@ def print_report(since=None):
         print("No hay datos todavía. Ejecuta collector.py primero.")
         return
 
-    fishing_vessels = vessels[vessels["ship_type"] == 30]
-    print(f"Barcos pesqueros (type=30): {len(fishing_vessels)}")
-    print(f"\nBarcos:")
-    for _, v in vessels.iterrows():
-        print(f"  {v['mmsi']} - {v['name'] or '?'} (type={v['ship_type']})")
+    candidates = vessels[[
+        is_fishing_candidate(m, _int_or_none(t))
+        for m, t in zip(vessels["mmsi"], vessels["ship_type"])
+    ]]
+    print(f"Barcos pesqueros (flota, tipo 30 o tipo desconocido): {len(candidates)}")
+    print("\nBarcos:")
+    for _, v in candidates.iterrows():
+        print(f"  {v['mmsi']} - {v['name'] or '?'} (type={_int_or_none(v['ship_type'])})")
 
     df = analyze_vessel_tracks(since=since)
     if df.empty:
@@ -299,7 +345,7 @@ def print_report(since=None):
 
     print(f"\nPosiciones totales: {len(df)}")
     activity_counts = df["activity"].value_counts()
-    print(f"\nActividad:")
+    print("\nActividad:")
     for act, count in activity_counts.items():
         print(f"  {act}: {count} ({count/len(df)*100:.1f}%)")
 
@@ -316,7 +362,7 @@ def print_report(since=None):
 
     zones = get_fishing_zones(df)
     if not zones.empty:
-        print(f"\nTop 10 zonas de pesca:")
+        print("\nTop 10 zonas de pesca:")
         for _, z in zones.head(10).iterrows():
             print(
                 f"  ({z['lat_grid']:.3f}, {z['lon_grid']:.3f}): "
@@ -326,4 +372,13 @@ def print_report(since=None):
 
 
 if __name__ == "__main__":
-    print_report()
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Informe AIS Luarca")
+    ap.add_argument("--since", help="Fecha mínima, p.ej. 2026-04-01")
+    ap.add_argument("--days", type=int, help="Solo los últimos N días")
+    args = ap.parse_args()
+    since = args.since
+    if args.days:
+        since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    print_report(since=since)

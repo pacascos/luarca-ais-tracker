@@ -1,21 +1,21 @@
 """Visualización de rutas AIS en mapas HTML con Folium."""
 
+import argparse
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import folium
-from folium.plugins import HeatMap, MarkerCluster
+from folium.plugins import HeatMap
 
 from config import LUARCA_LAT, LUARCA_LON
+from analyzer import analyze_vessel_tracks, get_trip_summary, load_vessels
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-from analyzer import (
-    analyze_vessel_tracks,
-    get_fishing_zones,
-    get_fishing_zone_details,
-    get_trip_summary,
-    load_vessels,
-)
+
+# Periodo mostrado por defecto al abrir un mapa (el slider permite ampliarlo
+# hasta todo el histórico embebido en la página).
+DEFAULT_WINDOW_DAYS = 30
 
 # Colores por tipo de actividad
 ACTIVITY_COLORS = {
@@ -149,11 +149,25 @@ def _web_path(filename):
     return os.path.join(WEB_DIR, filename)
 
 
-TRACKS_JS_TEMPLATE = r"""
+FILTER_PANEL_TEMPLATE = r"""
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
 <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
 <style>
-  #df-panel .noUi-connect { background: #3498db; }
+  #df-panel {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    z-index: 1000; width: min(760px, calc(100vw - 60px));
+    background: rgba(255,255,255,0.96); padding: 12px 22px 18px; border-radius: 8px;
+    border: 1px solid #aaa; font-family: -apple-system, sans-serif;
+    font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  }
+  #df-panel .df-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  #df-panel .df-stats { color:#444; flex:1; min-width: 200px; }
+  #df-panel select, #df-panel button {
+    padding:3px 10px; border:1px solid #aaa; border-radius:4px; background:#fff;
+    font-size:12px; cursor:pointer;
+  }
+  #df-panel button.active { background:__COLOR__; color:#fff; border-color:__COLOR__; }
+  #df-panel .noUi-connect { background: __COLOR__; }
   #df-panel .noUi-horizontal { height: 12px; }
   #df-panel .noUi-horizontal .noUi-handle {
     width: 22px; height: 22px; top: -6px; right: -11px;
@@ -161,59 +175,129 @@ TRACKS_JS_TEMPLATE = r"""
   }
   #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
 </style>
-<div id="df-panel" style="
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  z-index: 1000; width: min(720px, calc(100vw - 60px));
-  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
-  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
-  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
-">
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+<div id="df-panel">
+  <div class="df-row">
     <b>Periodo</b>
-    <span style="color:#444;">
+    <span class="df-stats">
       <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
-      &nbsp;·&nbsp; <b id="df-count">0</b> pos
-      &nbsp;·&nbsp; <b id="df-vessels">0</b> barcos
+      &nbsp;·&nbsp; <span id="df-stats"></span>
     </span>
-    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
+    <select id="df-vessel"><option value="">Todos los barcos</option></select>
+    <button id="df-month" title="Últimos __DAYS__ días">Último mes</button>
+    <button id="df-all" title="Todo el histórico">Todo</button>
   </div>
   <div id="df-slider" style="margin: 10px 8px 0;"></div>
 </div>
 <script>
-(function(){
-  var tries = 0;
-  var iv = setInterval(function(){
-    tries++;
-    if (__READY__ && typeof noUiSlider !== 'undefined') {
-      clearInterval(iv); init();
-    } else if (tries > 400) {
-      clearInterval(iv); console.error('tracks layers not ready');
-    }
-  }, 50);
+// Panel de filtros compartido por los mapas. Cada mapa llama a
+// setupFilters({minTs, maxTs, vessels, onChange}) cuando sus capas existen.
+window.setupFilters = function(opts){
+  var DAY = 24*60*60*1000;
+  var WINDOW = __DAYS__ * DAY;
+  var MIN_TS = opts.minTs, MAX_TS = opts.maxTs;
+  if (MAX_TS <= MIN_TS) MAX_TS = MIN_TS + DAY;
+  var DEFAULT_LO = Math.max(MIN_TS, MAX_TS - WINDOW);
 
-  function init(){
+  function pad(n){ return n.toString().padStart(2, '0'); }
+  function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
+
+  var sel = document.getElementById('df-vessel');
+  Object.keys(opts.vessels).map(function(m){ return [opts.vessels[m] || m, m]; })
+    .sort(function(a, b){ return a[0].localeCompare(b[0]); })
+    .forEach(function(v){
+      var o = document.createElement('option'); o.value = v[1]; o.textContent = v[0]; sel.appendChild(o);
+    });
+
+  var slider = document.getElementById('df-slider');
+  noUiSlider.create(slider, {
+    start: [DEFAULT_LO, MAX_TS], connect: true,
+    range: {min: MIN_TS, max: MAX_TS},
+    step: DAY, behaviour: 'drag-tap',
+  });
+
+  var btnMonth = document.getElementById('df-month');
+  var btnAll = document.getElementById('df-all');
+  function markButtons(lo, hi){
+    btnAll.classList.toggle('active', lo <= MIN_TS && hi >= MAX_TS);
+    btnMonth.classList.toggle('active', Math.abs(lo - DEFAULT_LO) < DAY && hi >= MAX_TS && DEFAULT_LO > MIN_TS);
+  }
+  function apply(values){
+    var lo = +values[0], hi = +values[1];
+    markButtons(lo, hi);
+    opts.onChange(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi + DAY - 1, sel.value || null);
+  }
+
+  slider.noUiSlider.on('update', function(values){
+    document.getElementById('df-min').textContent = fmtDate(+values[0]);
+    document.getElementById('df-max').textContent = fmtDate(+values[1]);
+  });
+  var pending = null;
+  slider.noUiSlider.on('slide', function(values){
+    if (pending) clearTimeout(pending);
+    pending = setTimeout(function(){ apply(values); }, 100);
+  });
+  slider.noUiSlider.on('set', function(values){ apply(values); });
+  sel.addEventListener('change', function(){ apply(slider.noUiSlider.get()); });
+  btnMonth.addEventListener('click', function(){ slider.noUiSlider.set([DEFAULT_LO, MAX_TS]); });
+  btnAll.addEventListener('click', function(){ slider.noUiSlider.set([MIN_TS, MAX_TS]); });
+
+  apply(slider.noUiSlider.get());
+};
+window.setFilterStats = function(html){ document.getElementById('df-stats').innerHTML = html; };
+</script>
+"""
+
+
+def _filter_panel(color):
+    return (FILTER_PANEL_TEMPLATE
+            .replace("__COLOR__", color)
+            .replace("__DAYS__", str(DEFAULT_WINDOW_DAYS)))
+
+
+def _wait_for(ready_expr, body_js):
+    """Envuelve body_js en un poll hasta que las variables de Folium existen."""
+    return f"""
+<script>
+(function(){{
+  var tries = 0;
+  var iv = setInterval(function(){{
+    tries++;
+    if ({ready_expr} && typeof window.setupFilters === 'function') {{
+      clearInterval(iv); init();
+    }} else if (tries > 400) {{
+      clearInterval(iv); console.error('map layers not ready after 20s');
+    }}
+  }}, 50);
+  function init(){{
+{body_js}
+  }}
+}})();
+</script>
+"""
+
+
+def _vessel_names(mmsis):
+    """{mmsi: nombre} solo para los MMSI presentes en el mapa."""
+    vessels_db = load_vessels()
+    names = {str(r.mmsi): (r.name or "?") for r in vessels_db.itertuples(index=False)}
+    return {m: names.get(m, m) for m in sorted(set(mmsis))}
+
+
+TRACKS_JS = r"""
     var ALL = __POINTS__;
     var NAMES = __NAMES__;
-    var MIN_TS = __MIN_TS__;
-    var MAX_TS = __MAX_TS__;
     var LAYERS = __LAYERS__;
     var ACT_NAMES = ['fishing','transit','moored','slow_transit','unknown'];
     var ACT_COLORS = ['#e74c3c','#3498db','#95a5a6','#f39c12','#bdc3c7'];
+    var MAX_GAP_MS = 30 * 60 * 1000;   // no unir posiciones separadas > 30 min
 
-    function pad(n){ return n.toString().padStart(2, '0'); }
-    function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
-
-    function filterPts(minTs, maxTs){
-      if (minTs == null && maxTs == null) return ALL;
-      return ALL.filter(function(p){
+    function rebuild(minTs, maxTs, mmsi){
+      var pts = ALL.filter(function(p){
+        if (mmsi && p[3] !== mmsi) return false;
         if (minTs != null && p[2] < minTs) return false;
         if (maxTs != null && p[2] > maxTs) return false;
         return true;
       });
-    }
-
-    function rebuild(minTs, maxTs){
-      var pts = filterPts(minTs, maxTs);
       for (var k in LAYERS) LAYERS[k].clearLayers();
 
       var byMmsi = {};
@@ -230,6 +314,7 @@ TRACKS_JS_TEMPLATE = r"""
         var name = NAMES[m] || m;
         for (var j = 0; j < vp.length - 1; j++){
           var p1 = vp[j], p2 = vp[j + 1];
+          if (p2[2] - p1[2] > MAX_GAP_MS) continue;
           var act = p1[4];
           var layer = LAYERS[act];
           if (!layer) continue;
@@ -239,41 +324,13 @@ TRACKS_JS_TEMPLATE = r"""
             .addTo(layer);
         }
       }
-
-      document.getElementById('df-count').textContent = pts.length;
-      document.getElementById('df-vessels').textContent = vesselCount;
+      window.setFilterStats('<b>' + pts.length + '</b> pos · <b>' + vesselCount + '</b> barcos');
     }
 
-    var slider = document.getElementById('df-slider');
-    noUiSlider.create(slider, {
-      start: [MIN_TS, MAX_TS], connect: true,
-      range: {min: MIN_TS, max: MAX_TS},
-      step: 24*60*60*1000, behaviour: 'drag-tap',
+    window.setupFilters({
+      minTs: __MIN_TS__, maxTs: __MAX_TS__, vessels: NAMES,
+      onChange: rebuild
     });
-    slider.noUiSlider.on('update', function(values){
-      document.getElementById('df-min').textContent = fmtDate(+values[0]);
-      document.getElementById('df-max').textContent = fmtDate(+values[1]);
-    });
-    var pending = null;
-    slider.noUiSlider.on('slide', function(values){
-      if (pending) clearTimeout(pending);
-      pending = setTimeout(function(){
-        var lo = +values[0], hi = +values[1];
-        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-      }, 100);
-    });
-    slider.noUiSlider.on('set', function(values){
-      var lo = +values[0], hi = +values[1];
-      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-    });
-    document.getElementById('df-clear').addEventListener('click', function(){
-      slider.noUiSlider.set([MIN_TS, MAX_TS]);
-    });
-
-    rebuild(null, null);
-  }
-})();
-</script>
 """
 
 
@@ -281,7 +338,7 @@ ACTIVITY_ORDER = ["fishing", "transit", "moored", "slow_transit", "unknown"]
 
 
 def map_vessel_tracks(mmsi=None, since=None, output=None):
-    """Tracks coloreadas por actividad con filtro de fecha client-side."""
+    """Tracks coloreadas por actividad con filtro de fecha y barco client-side."""
     output = output or _web_path("mapa_tracks.html")
     df = analyze_vessel_tracks(mmsi=mmsi, since=since)
 
@@ -310,8 +367,7 @@ def map_vessel_tracks(mmsi=None, since=None, output=None):
                 round(sog, 2),
             ])
 
-    vessels_db = load_vessels()
-    names = {str(r.mmsi): (r.name or "?") for r in vessels_db.itertuples(index=False)}
+    names = _vessel_names(p[3] for p in points)
 
     if df.empty:
         min_ts = max_ts = 0
@@ -325,76 +381,26 @@ def map_vessel_tracks(mmsi=None, since=None, output=None):
     ) + "}"
     ready_js = " && ".join(f"typeof {n} !== 'undefined'" for n in layer_names)
 
-    js = (
-        TRACKS_JS_TEMPLATE
+    body = (
+        TRACKS_JS
         .replace("__POINTS__", json.dumps(points))
         .replace("__NAMES__", json.dumps(names))
         .replace("__LAYERS__", layers_js)
-        .replace("__READY__", ready_js)
         .replace("__MIN_TS__", str(min_ts))
         .replace("__MAX_TS__", str(max_ts))
     )
-    m.get_root().html.add_child(folium.Element(js))
+    m.get_root().html.add_child(folium.Element(_filter_panel("#3498db")))
+    m.get_root().html.add_child(folium.Element(_wait_for(ready_js, body)))
 
     m.save(output)
     print(f"Mapa guardado en {output} ({len(points)} puntos)")
     return m
 
 
-FISHING_JS_TEMPLATE = r"""
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
-<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
-<style>
-  #df-panel .noUi-connect { background: #e74c3c; }
-  #df-panel .noUi-horizontal { height: 12px; }
-  #df-panel .noUi-horizontal .noUi-handle {
-    width: 22px; height: 22px; top: -6px; right: -11px;
-    border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  }
-  #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
-</style>
-<div id="df-panel" style="
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  z-index: 1000; width: min(720px, calc(100vw - 60px));
-  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
-  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
-  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
-">
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-    <b>Periodo</b>
-    <span style="color:#444;">
-      <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
-      &nbsp;·&nbsp; <b id="df-count">0</b> pos
-      &nbsp;·&nbsp; <b id="df-cells">0</b> celdas
-    </span>
-    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
-  </div>
-  <div id="df-slider" style="margin: 10px 8px 0;"></div>
-</div>
-<script>
-(function(){
-  var tries = 0;
-  var iv = setInterval(function(){
-    tries++;
-    if (typeof __HEAT__ !== 'undefined' &&
-        typeof __TOP__ !== 'undefined' &&
-        typeof __DETAIL__ !== 'undefined' &&
-        typeof __POSITIONS__ !== 'undefined' &&
-        typeof noUiSlider !== 'undefined') {
-      clearInterval(iv);
-      init();
-    } else if (tries > 400) {
-      clearInterval(iv);
-      console.error('Folium layers / noUiSlider not ready after 20s');
-    }
-  }, 50);
-
-  function init(){
+FISHING_JS = r"""
     var ALL = __POINTS__;
     var NAMES = __NAMES__;
     var GRID = __GRID__;
-    var MIN_TS = __MIN_TS__;
-    var MAX_TS = __MAX_TS__;
     var heat = __HEAT__;
     var top_zones = __TOP__;
     var detail = __DETAIL__;
@@ -406,19 +412,6 @@ FISHING_JS_TEMPLATE = r"""
       var d = new Date(ts);
       return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' +
              pad(d.getHours()) + ':' + pad(d.getMinutes());
-    }
-    function fmtDate(ts){
-      var d = new Date(ts);
-      return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear();
-    }
-
-    function filterPts(minTs, maxTs){
-      if (minTs == null && maxTs == null) return ALL;
-      return ALL.filter(function(p){
-        if (minTs != null && p[2] < minTs) return false;
-        if (maxTs != null && p[2] > maxTs) return false;
-        return true;
-      });
     }
 
     function aggregate(pts){
@@ -465,8 +458,13 @@ FISHING_JS_TEMPLATE = r"""
         '</tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
 
-    function rebuild(minTs, maxTs){
-      var pts = filterPts(minTs, maxTs);
+    function rebuild(minTs, maxTs, mmsi){
+      var pts = ALL.filter(function(p){
+        if (mmsi && p[3] !== mmsi) return false;
+        if (minTs != null && p[2] < minTs) return false;
+        if (maxTs != null && p[2] > maxTs) return false;
+        return true;
+      });
 
       heat.setLatLngs(pts.map(function(p){ return [p[0], p[1], 1]; }));
 
@@ -507,53 +505,18 @@ FISHING_JS_TEMPLATE = r"""
           .addTo(positions);
       }
 
-      document.getElementById('df-count').textContent = pts.length;
-      document.getElementById('df-cells').textContent = cells.length;
+      window.setFilterStats('<b>' + pts.length + '</b> pos · <b>' + cells.length + '</b> celdas');
     }
 
-    var slider = document.getElementById('df-slider');
-    var DAY = 24 * 60 * 60 * 1000;
-    noUiSlider.create(slider, {
-      start: [MIN_TS, MAX_TS],
-      connect: true,
-      range: {min: MIN_TS, max: MAX_TS},
-      step: DAY,
-      behaviour: 'drag-tap',
+    window.setupFilters({
+      minTs: __MIN_TS__, maxTs: __MAX_TS__, vessels: NAMES,
+      onChange: rebuild
     });
-
-    slider.noUiSlider.on('update', function(values){
-      var lo = +values[0], hi = +values[1];
-      document.getElementById('df-min').textContent = fmtDate(lo);
-      document.getElementById('df-max').textContent = fmtDate(hi);
-    });
-
-    var pending = null;
-    slider.noUiSlider.on('slide', function(values){
-      // Redraw durante el arrastre (con throttle ligero).
-      var lo = +values[0], hi = +values[1];
-      if (pending) clearTimeout(pending);
-      pending = setTimeout(function(){
-        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-      }, 80);
-    });
-    slider.noUiSlider.on('set', function(values){
-      var lo = +values[0], hi = +values[1];
-      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-    });
-
-    document.getElementById('df-clear').addEventListener('click', function(){
-      slider.noUiSlider.set([MIN_TS, MAX_TS]);
-    });
-
-    rebuild(null, null);
-  }
-})();
-</script>
 """
 
 
 def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
-    """Genera el mapa de zonas de pesca con filtro de fecha client-side."""
+    """Genera el mapa de zonas de pesca con filtro de fecha y barco client-side."""
     output = output or _web_path("mapa_pesca.html")
     df = analyze_vessel_tracks(mmsi=mmsi, since=since)
 
@@ -574,8 +537,7 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
                 round(sog, 2),
             ])
 
-    vessels_db = load_vessels()
-    names = {str(r.mmsi): (r.name or "?") for r in vessels_db.itertuples(index=False)}
+    names = _vessel_names(p[3] for p in points)
 
     # Capas placeholder — se pueblan client-side. Heatmap exige 1 punto dummy.
     dummy = [[LUARCA_LAT, LUARCA_LON, 0.0001]]
@@ -598,8 +560,12 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
         min_ts = int(fishing["timestamp"].min().timestamp() * 1000)
         max_ts = int(fishing["timestamp"].max().timestamp() * 1000)
 
-    js = (
-        FISHING_JS_TEMPLATE
+    layer_names = [heat_layer.get_name(), top_layer.get_name(),
+                   detail_layer.get_name(), positions_layer.get_name()]
+    ready_js = " && ".join(f"typeof {n} !== 'undefined'" for n in layer_names)
+
+    body = (
+        FISHING_JS
         .replace("__POINTS__", json.dumps(points))
         .replace("__NAMES__", json.dumps(names))
         .replace("__GRID__", str(grid_size))
@@ -610,67 +576,28 @@ def map_fishing_zones(mmsi=None, since=None, output=None, grid_size=0.01):
         .replace("__MIN_TS__", str(min_ts))
         .replace("__MAX_TS__", str(max_ts))
     )
-    m.get_root().html.add_child(folium.Element(js))
+    m.get_root().html.add_child(folium.Element(_filter_panel("#e74c3c")))
+    m.get_root().html.add_child(folium.Element(_wait_for(ready_js, body)))
 
     m.save(output)
     print(f"Mapa de zonas de pesca guardado en {output} ({len(points)} puntos)")
     return m
 
 
-TRIPS_JS_TEMPLATE = r"""
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
-<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
-<style>
-  #df-panel .noUi-connect { background: #2ecc71; }
-  #df-panel .noUi-horizontal { height: 12px; }
-  #df-panel .noUi-horizontal .noUi-handle {
-    width: 22px; height: 22px; top: -6px; right: -11px;
-    border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  }
-  #df-panel .noUi-handle::before, #df-panel .noUi-handle::after { display: none; }
-</style>
-<div id="df-panel" style="
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  z-index: 1000; width: min(720px, calc(100vw - 60px));
-  background: rgba(255,255,255,0.96); padding: 14px 22px 18px; border-radius: 8px;
-  border: 1px solid #aaa; font-family: -apple-system, sans-serif;
-  font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
-">
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-    <b>Periodo</b>
-    <span style="color:#444;">
-      <b id="df-min">—</b> &nbsp;→&nbsp; <b id="df-max">—</b>
-      &nbsp;·&nbsp; <b id="df-count">0</b> viajes
-    </span>
-    <button id="df-clear" style="padding:3px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#fff;">Reset</button>
-  </div>
-  <div id="df-slider" style="margin: 10px 8px 0;"></div>
-</div>
-<script>
-(function(){
-  var tries = 0;
-  var iv = setInterval(function(){
-    tries++;
-    if (typeof __LAYER__ !== 'undefined' && typeof noUiSlider !== 'undefined'){
-      clearInterval(iv); init();
-    } else if (tries > 400){ clearInterval(iv); console.error('trips layer not ready'); }
-  }, 50);
-
-  function init(){
+TRIPS_JS = r"""
     var ALL = __TRIPS__;
-    var MIN_TS = __MIN_TS__;
-    var MAX_TS = __MAX_TS__;
+    var NAMES = __NAMES__;
     var layer = __LAYER__;
     var PALETTE = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6',
                    '#1abc9c','#e67e22','#34495e','#d35400','#c0392b'];
 
     function pad(n){ return n.toString().padStart(2, '0'); }
     function fmt(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
-    function fmtDate(ts){ var d = new Date(ts); return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear(); }
 
-    function rebuild(minTs, maxTs){
+    function rebuild(minTs, maxTs, mmsi){
       layer.clearLayers();
       var trips = ALL.filter(function(t){
+        if (mmsi && t.mmsi !== mmsi) return false;
         if (maxTs != null && t.start > maxTs) return false;
         if (minTs != null && t.end < minTs) return false;
         return true;
@@ -680,7 +607,7 @@ TRIPS_JS_TEMPLATE = r"""
         if (!t.coords || t.coords.length < 2) continue;
         var color = PALETTE[i % PALETTE.length];
         var popup =
-            '<b>' + (t.name || t.mmsi) + '</b><br>' +
+            '<b>' + (NAMES[t.mmsi] || t.mmsi) + '</b><br>' +
             'MMSI: ' + t.mmsi + ' · Sesión #' + t.trip_id + '<br>' +
             fmt(t.start) + ' &rarr; ' + fmt(t.end) + '<br>' +
             'Duración: ' + t.duration_h.toFixed(1) + ' h<br>' +
@@ -698,44 +625,18 @@ TRIPS_JS_TEMPLATE = r"""
           fillOpacity: 0.9, weight: 2
         }).bindPopup('Fin sesión: ' + fmt(t.end)).addTo(layer);
       }
-      document.getElementById('df-count').textContent = trips.length;
+      window.setFilterStats('<b>' + trips.length + '</b> viajes');
     }
 
-    var slider = document.getElementById('df-slider');
-    noUiSlider.create(slider, {
-      start: [MIN_TS, MAX_TS], connect: true,
-      range: {min: MIN_TS, max: MAX_TS},
-      step: 24*60*60*1000, behaviour: 'drag-tap',
+    window.setupFilters({
+      minTs: __MIN_TS__, maxTs: __MAX_TS__, vessels: NAMES,
+      onChange: rebuild
     });
-    slider.noUiSlider.on('update', function(values){
-      document.getElementById('df-min').textContent = fmtDate(+values[0]);
-      document.getElementById('df-max').textContent = fmtDate(+values[1]);
-    });
-    var pending = null;
-    slider.noUiSlider.on('slide', function(values){
-      if (pending) clearTimeout(pending);
-      pending = setTimeout(function(){
-        var lo = +values[0], hi = +values[1];
-        rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-      }, 100);
-    });
-    slider.noUiSlider.on('set', function(values){
-      var lo = +values[0], hi = +values[1];
-      rebuild(lo <= MIN_TS ? null : lo, hi >= MAX_TS ? null : hi);
-    });
-    document.getElementById('df-clear').addEventListener('click', function(){
-      slider.noUiSlider.set([MIN_TS, MAX_TS]);
-    });
-
-    rebuild(null, null);
-  }
-})();
-</script>
 """
 
 
 def map_trips(mmsi=None, since=None, output=None):
-    """Viajes puerto → mar → puerto con filtro de fecha client-side."""
+    """Viajes puerto → mar → puerto con filtro de fecha y barco client-side."""
     output = output or _web_path("mapa_viajes.html")
     df = analyze_vessel_tracks(mmsi=mmsi, since=since)
     trips_df = get_trip_summary(df) if not df.empty else df
@@ -743,9 +644,6 @@ def map_trips(mmsi=None, since=None, output=None):
     m = create_base_map(zoom=10)
     trip_layer = folium.FeatureGroup(name="Viajes").add_to(m)
     folium.LayerControl().add_to(m)
-
-    vessels_db = load_vessels()
-    name_by_mmsi = dict(zip(vessels_db["mmsi"], vessels_db["name"]))
 
     trips_payload = []
     if not trips_df.empty:
@@ -758,7 +656,6 @@ def map_trips(mmsi=None, since=None, output=None):
                       for r in tdf.itertuples(index=False)]
             trips_payload.append({
                 "mmsi": str(t["mmsi"]),
-                "name": name_by_mmsi.get(t["mmsi"]) or "?",
                 "trip_id": int(t["trip_id"]),
                 "start": int(t["start"].timestamp() * 1000),
                 "end": int(t["end"].timestamp() * 1000),
@@ -768,20 +665,25 @@ def map_trips(mmsi=None, since=None, output=None):
                 "coords": coords,
             })
 
+    names = _vessel_names(t["mmsi"] for t in trips_payload)
+
     if not trips_payload:
         min_ts = max_ts = 0
     else:
         min_ts = min(t["start"] for t in trips_payload)
         max_ts = max(t["end"] for t in trips_payload)
 
-    js = (
-        TRIPS_JS_TEMPLATE
+    body = (
+        TRIPS_JS
         .replace("__TRIPS__", json.dumps(trips_payload))
+        .replace("__NAMES__", json.dumps(names))
         .replace("__LAYER__", trip_layer.get_name())
         .replace("__MIN_TS__", str(min_ts))
         .replace("__MAX_TS__", str(max_ts))
     )
-    m.get_root().html.add_child(folium.Element(js))
+    ready_js = f"typeof {trip_layer.get_name()} !== 'undefined'"
+    m.get_root().html.add_child(folium.Element(_filter_panel("#2ecc71")))
+    m.get_root().html.add_child(folium.Element(_wait_for(ready_js, body)))
 
     m.save(output)
     print(f"Mapa de viajes guardado en {output} ({len(trips_payload)} viajes)")
@@ -838,6 +740,9 @@ def build_index():
     </a>
   </div>
 
+  <p class="sub">Cada mapa abre con el último mes de datos; usa el panel inferior
+  para cambiar el periodo o elegir un barco.</p>
+
   <footer>
     Datos: aisstream.io + VesselTracker · Cartografía: OpenStreetMap, Esri Ocean,
     OpenSeaMap, EMODnet Bathymetry, GEBCO.
@@ -851,10 +756,25 @@ def build_index():
     print(f"Index guardado en {path}")
 
 
-if __name__ == "__main__":
+def main():
+    ap = argparse.ArgumentParser(description="Genera los mapas HTML en web/")
+    ap.add_argument("--since", help="Solo datos desde esta fecha (p.ej. 2026-04-01)")
+    ap.add_argument("--days", type=int,
+                    help="Solo los últimos N días (limita el histórico embebido)")
+    ap.add_argument("--mmsi", help="Solo un barco")
+    args = ap.parse_args()
+
+    since = args.since
+    if args.days:
+        since = datetime.now(timezone.utc) - timedelta(days=args.days)
+
     print("Generando mapas...")
-    map_vessel_tracks()
-    map_fishing_zones()
-    map_trips()
+    map_vessel_tracks(mmsi=args.mmsi, since=since)
+    map_fishing_zones(mmsi=args.mmsi, since=since)
+    map_trips(mmsi=args.mmsi, since=since)
     build_index()
     print("Listo.")
+
+
+if __name__ == "__main__":
+    main()

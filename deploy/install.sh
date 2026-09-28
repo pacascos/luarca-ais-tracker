@@ -67,7 +67,11 @@ RSYNC_EXCLUDES=(
   --exclude='.DS_Store'
   --exclude='.claude/'
   --exclude='*.log'
-  --exclude='ais_luarca.db'   # no machacar la BD existente
+  --exclude='.env'            # credenciales: se crean en el servidor (paso 5)
+  --exclude='dumps/'          # copias de seguridad locales
+  --exclude='*.db'            # no machacar la BD existente
+  --exclude='*.db-wal'
+  --exclude='*.db-shm'
 )
 rsync -a "${RSYNC_EXCLUDES[@]}" --chown="$LUARCA_USER":"$LUARCA_USER" "$SRC_DIR/" "$LUARCA_HOME/"
 
@@ -115,6 +119,8 @@ Siguientes pasos:
        scp ais_luarca.db servidor:/tmp/
        sudo install -o $LUARCA_USER -g $LUARCA_USER -m 644 \\
             /tmp/ais_luarca.db $LUARCA_HOME/ais_luarca.db
+     Si la BD viene de una versión anterior, normalízala una vez:
+       sudo -u $LUARCA_USER $LUARCA_HOME/.venv/bin/python $LUARCA_HOME/migrate_db.py
 
   3. Habilita y arranca los servicios:
        sudo systemctl enable --now luarca-ais-collector.service

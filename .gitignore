@@ -2,8 +2,11 @@
 __pycache__/
 *.pyc
 *.db
+*.db-wal
+*.db-shm
 .venv/
 data/
+dumps/
 *.gif
 collector.log
 *.log

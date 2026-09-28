@@ -1,13 +1,11 @@
 """Cliente para la API REST de VesselTracker (cuenta Antenna Operator)."""
 
 import logging
-import time
-from datetime import datetime, timezone
 
 import requests
 
-from config import DB_PATH
-from db import init_db, upsert_vessel, insert_position, get_conn
+from config import DB_PATH, PESQUEROS_LUARCA, SHIP_TYPE_FISHING
+from db import init_db, upsert_vessel, insert_position, utcnow_ts
 
 log = logging.getLogger(__name__)
 
@@ -15,26 +13,6 @@ log = logging.getLogger(__name__)
 
 VT_API_BASE = "https://restapi.vesseltracker.com/api/v1"
 VT_LOGIN_URL = f"{VT_API_BASE}/login"
-
-# Pesqueros Luarca - VesselTracker IDs y MMSIs
-PESQUEROS_LUARCA = {
-    2767978:  {"name": "YODAM",                "mmsi": "224218130"},
-    3224248:  {"name": "GAMUSIN",              "mmsi": "224249880"},
-    368041:   {"name": "NAGORE II",            "mmsi": "224221940"},
-    1543738:  {"name": "NUEVO HERMANOS POLA",  "mmsi": "224218660"},
-    1745130:  {"name": "TRES HN0S CACHAREL0S", "mmsi": "224094590"},
-    3113789:  {"name": "ISLA ERBOSA",          "mmsi": "224159140"},
-    2157044:  {"name": "MADIMAR",              "mmsi": "224067630"},
-    1760268:  {"name": "MADRE RAFAELA",        "mmsi": "224026280"},
-    377843:   {"name": "NAVEOTE",              "mmsi": "224062390"},
-    2733777:  {"name": "JOSERCRIS",            "mmsi": "225993201"},
-    1538922:  {"name": "MUNDAKA",              "mmsi": "224085560"},
-    799611:   {"name": "NUEVO SOCIO",          "mmsi": "224181230"},
-    888235:   {"name": "PICO SACRO",           "mmsi": "224095140"},
-    1050022:  {"name": "REGINO JESUS",         "mmsi": "224081130"},
-    1076589:  {"name": "RINCHADOR",            "mmsi": "224052340"},
-    1050262:  {"name": "RIO XUNCO",            "mmsi": "224208650"},
-}
 
 
 class VesselTrackerClient:
@@ -127,7 +105,7 @@ class VesselTrackerClient:
 
     def save_to_db(self, vessels: list):
         """Guarda las posiciones obtenidas de VesselTracker en la BD."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now = utcnow_ts()
         saved = 0
         for v in vessels:
             if v["lat"] is None or v["lon"] is None:
@@ -139,24 +117,25 @@ class VesselTrackerClient:
             upsert_vessel(
                 mmsi=v["mmsi"],
                 name=v["name"],
-                ship_type=30 if v["ship_type"] == "fishing_vessel" else None,
+                ship_type=SHIP_TYPE_FISHING if v["ship_type"] == "fishing_vessel" else None,
                 length=v["length"],
                 width=v["width"],
             )
 
-            # Insertar posicion con timestamp de last_seen o ahora
+            # Insertar posicion con timestamp de last_seen o ahora. Si la
+            # posición no ha cambiado desde el último poll, se ignora.
             ts = v.get("last_seen") or now
-            insert_position(
+            if insert_position(
                 mmsi=v["mmsi"],
                 timestamp=ts,
                 lat=v["lat"],
                 lon=v["lon"],
                 sog=v["sog"],
                 cog=v["cog"],
-            )
-            saved += 1
+            ):
+                saved += 1
 
-        log.info("Guardadas %d posiciones de VesselTracker", saved)
+        log.info("Guardadas %d posiciones nuevas de VesselTracker", saved)
         return saved
 
 
