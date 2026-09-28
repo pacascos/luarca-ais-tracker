@@ -144,6 +144,11 @@ async def session(ws):
             except json.JSONDecodeError:
                 continue
 
+            if "error" in message:
+                # aisstream responde así ante API key inválida o suscripción mal formada
+                log.error("aisstream.io: %s", message["error"])
+                continue
+
             msg_type = message.get("MessageType", "")
             if msg_type == "PositionReport":
                 if process_position_report(message, conn):
@@ -159,6 +164,8 @@ async def session(ws):
                 pending = 0
                 last_commit = now
 
+            if stats["messages"] == 1:
+                log.info("Primer mensaje recibido (%s)", msg_type or "?")
             if stats["messages"] % 500 == 0:
                 log.info(
                     "--- Stats: %d mensajes, %d posiciones guardadas, "
