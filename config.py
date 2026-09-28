@@ -46,6 +46,7 @@ PESQUEROS_LUARCA = {
     1050022:  {"name": "REGINO JESUS",         "mmsi": "224081130"},
     1076589:  {"name": "RINCHADOR",            "mmsi": "224052340"},
     1050262:  {"name": "RIO XUNCO",            "mmsi": "224208650"},
+    4096556:  {"name": "LEIREMAR",             "mmsi": "224642920"},
 }
 # Barcos que amarran habitualmente en Luarca pero no están en el grupo de
 # VesselTracker (detectados por sus posiciones en puerto).
